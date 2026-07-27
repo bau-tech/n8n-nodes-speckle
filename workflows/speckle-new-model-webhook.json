@@ -1,0 +1,156 @@
+{
+  "name": "Speckle New Model Webhook",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "speckle-new-model",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [
+        250,
+        300
+      ],
+      "webhookId": "speckle-new-model"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.body.event.event_name }}",
+              "operation": "equals",
+              "value2": "branch_created"
+            }
+          ]
+        }
+      },
+      "id": "filter-branch-created",
+      "name": "Filter: Branch Created",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        450,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "extractFields",
+        "fieldsToExtract": {
+          "values": [
+            {
+              "fieldName": "projectId",
+              "path": "={{ $json.body.payload.projectId }}"
+            },
+            {
+              "fieldName": "modelId",
+              "path": "={{ $json.body.payload.modelId }}"
+            },
+            {
+              "fieldName": "modelName",
+              "path": "={{ $json.body.payload.modelName }}"
+            },
+            {
+              "fieldName": "createdBy",
+              "path": "={{ $json.body.payload.userId }}"
+            },
+            {
+              "fieldName": "serverUrl",
+              "path": "={{ $json.body.serverUrl }}"
+            },
+            {
+              "fieldName": "timestamp",
+              "path": "={{ $json.body.event.timestamp }}"
+            }
+          ]
+        }
+      },
+      "id": "extract-model-info",
+      "name": "Extract Model Info",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [
+        650,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process the new model creation event\nconst modelInfo = $input.first().json;\n\n// Log the new model details\nconsole.log('New Speckle Model Created:', {\n  projectId: modelInfo.projectId,\n  modelId: modelInfo.modelId,\n  modelName: modelInfo.modelName,\n  createdBy: modelInfo.createdBy,\n  serverUrl: modelInfo.serverUrl,\n  timestamp: modelInfo.timestamp\n});\n\n// Prepare output with formatted message\nreturn {\n  json: {\n    ...modelInfo,\n    message: `New model \"${modelInfo.modelName}\" created in project ${modelInfo.projectId}`,\n    webUrl: `${modelInfo.serverUrl}/projects/${modelInfo.projectId}/models/${modelInfo.modelId}`\n  }\n};"
+      },
+      "id": "process-event",
+      "name": "Process Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        850,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Speckle New Model Webhook Workflow\n\n### Setup Instructions:\n\n1. **Activate this workflow** to get the webhook URL\n2. **Copy the webhook URL** from the Webhook Trigger node\n3. **Register webhook with Speckle** using one of these methods:\n\n   **Method A: Using Speckle Web UI**\n   - Go to your Speckle project settings\n   - Navigate to Webhooks section\n   - Add new webhook with the URL\n   - Select \"Branch Created\" event\n\n   **Method B: Using GraphQL API**\n   ```graphql\n   mutation CreateWebhook {\n     webhookCreate(webhook: {\n       streamId: \"YOUR_PROJECT_ID\"\n       url: \"YOUR_WEBHOOK_URL\"\n       description: \"Notify when new model created\"\n       triggers: [BRANCH_CREATED]\n       enabled: true\n     }) {\n       id\n     }\n   }\n   ```\n\n   **Method C: Using Speckle Node**\n   - Add a Speckle node before this workflow\n   - Use operation: Webhook > Create\n\n### What This Workflow Does:\n\n1. Receives webhook notifications from Speckle\n2. Filters for \"branch_created\" events (new models)\n3. Extracts key information about the new model\n4. Processes the event and creates a formatted output\n\n### Output Fields:\n\n- `projectId`: The Speckle project ID\n- `modelId`: The newly created model/branch ID\n- `modelName`: Name of the new model\n- `createdBy`: User ID who created the model\n- `serverUrl`: Speckle server URL\n- `timestamp`: When the model was created\n- `message`: Human-readable summary\n- `webUrl`: Direct link to the model\n\n### Next Steps:\n\nAfter the \"Process Event\" node, you can:\n- Send notifications (email, Slack, Teams, etc.)\n- Trigger automation workflows\n- Update external databases\n- Create initial commits or versions\n- Run validation or quality checks",
+        "height": 650,
+        "width": 450
+      },
+      "id": "sticky-note",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        240
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Filter: Branch Created",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter: Branch Created": {
+      "main": [
+        [
+          {
+            "node": "Extract Model Info",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Model Info": {
+      "main": [
+        [
+          {
+            "node": "Process Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2026-01-10T13:28:52.000Z",
+  "versionId": "1"
+}

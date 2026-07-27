@@ -1,0 +1,690 @@
+<title>n8n-nodes-speckle — Speckle wired into n8n</title>
+<style>
+  :root {
+    --ink: #131A2B;
+    --ink-soft: #2A3550;
+    --muted: #545F78;
+    --paper: #ECEEE6;
+    --paper-2: #E1E4D8;
+    --paper-3: #D6DACB;
+    --line: rgba(19,26,43,0.18);
+    --line-strong: rgba(19,26,43,0.36);
+    --speckle: #2F6FEA;
+    --speckle-deep: #16327A;
+    --n8n: #E8492E;
+    --n8n-deep: #9C2E1B;
+    --font-mono: ui-monospace, "Cascadia Code", "SF Mono", "Consolas", "Roboto Mono", monospace;
+    --font-serif: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ink: #E8EFFC;
+      --ink-soft: #C7D5EE;
+      --muted: #93A6C9;
+      --paper: #0E1930;
+      --paper-2: #132242;
+      --paper-3: #182A4E;
+      --line: rgba(232,239,252,0.16);
+      --line-strong: rgba(232,239,252,0.34);
+      --speckle: #7FBFFF;
+      --speckle-deep: #CFE6FF;
+      --n8n: #FF8564;
+      --n8n-deep: #FFC1AC;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink: #E8EFFC;
+    --ink-soft: #C7D5EE;
+    --muted: #93A6C9;
+    --paper: #0E1930;
+    --paper-2: #132242;
+    --paper-3: #182A4E;
+    --line: rgba(232,239,252,0.16);
+    --line-strong: rgba(232,239,252,0.34);
+    --speckle: #7FBFFF;
+    --speckle-deep: #CFE6FF;
+    --n8n: #FF8564;
+    --n8n-deep: #FFC1AC;
+  }
+  :root[data-theme="light"] {
+    --ink: #131A2B;
+    --ink-soft: #2A3550;
+    --muted: #545F78;
+    --paper: #ECEEE6;
+    --paper-2: #E1E4D8;
+    --paper-3: #D6DACB;
+    --line: rgba(19,26,43,0.18);
+    --line-strong: rgba(19,26,43,0.36);
+    --speckle: #2F6FEA;
+    --speckle-deep: #16327A;
+    --n8n: #E8492E;
+    --n8n-deep: #9C2E1B;
+  }
+
+  * { box-sizing: border-box; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+  }
+
+  html, body {
+    background: var(--paper);
+    color: var(--ink);
+  }
+  body {
+    font-family: var(--font-serif);
+    font-size: 17px;
+    line-height: 1.6;
+    background-image:
+      repeating-linear-gradient(0deg, var(--line) 0 1px, transparent 1px 32px),
+      repeating-linear-gradient(90deg, var(--line) 0 1px, transparent 1px 32px);
+    background-attachment: local;
+  }
+
+  a { color: var(--speckle-deep); }
+  a:hover { color: var(--speckle); }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--speckle); outline-offset: 2px; }
+
+  .sheet {
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 28px 24px 60px;
+  }
+
+  /* ---------- Title block ---------- */
+  .titleblock {
+    border: 1.5px solid var(--line-strong);
+    background: var(--paper-2);
+    display: grid;
+    grid-template-columns: 1.4fr 1fr 1fr 1fr;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 0.02em;
+    position: relative;
+  }
+  .titleblock::before, .titleblock::after,
+  .diagram-panel::before, .diagram-panel::after,
+  .legend-panel::before, .legend-panel::after {
+    content: "";
+    position: absolute;
+    width: 12px;
+    height: 12px;
+    pointer-events: none;
+  }
+  .titleblock::before, .diagram-panel::before, .legend-panel::before {
+    top: -1px; left: -1px;
+    border-top: 2px solid var(--speckle);
+    border-left: 2px solid var(--speckle);
+  }
+  .titleblock::after, .diagram-panel::after, .legend-panel::after {
+    bottom: -1px; right: -1px;
+    border-bottom: 2px solid var(--n8n);
+    border-right: 2px solid var(--n8n);
+  }
+  .tb-cell {
+    padding: 10px 14px;
+    border-right: 1px solid var(--line);
+  }
+  .tb-cell:last-child { border-right: none; }
+  .tb-label {
+    display: block;
+    color: var(--muted);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    margin-bottom: 4px;
+  }
+  .tb-value { color: var(--ink); }
+
+  /* ---------- Hero ---------- */
+  .hero {
+    padding: 64px 4px 40px;
+  }
+  .eyebrow {
+    font-family: var(--font-sans);
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    color: var(--muted);
+    margin: 0 0 18px;
+  }
+  .lockup {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 30px;
+  }
+  .lockup .x {
+    font-family: var(--font-mono);
+    color: var(--line-strong);
+    font-size: 20px;
+  }
+  .wordmark-n8n {
+    font-family: var(--font-mono);
+    font-weight: 700;
+    font-size: 22px;
+    color: var(--ink);
+    letter-spacing: -0.02em;
+  }
+  .wordmark-n8n span { color: var(--n8n); }
+
+  h1.headline {
+    font-family: var(--font-mono);
+    font-weight: 700;
+    font-size: clamp(34px, 5.4vw, 56px);
+    line-height: 1.08;
+    letter-spacing: -0.01em;
+    margin: 0 0 26px;
+    text-wrap: balance;
+    max-width: 15ch;
+  }
+  h1.headline .accent-speckle { color: var(--speckle-deep); }
+  h1.headline .accent-n8n { color: var(--n8n-deep); }
+
+  .subhead {
+    font-size: 19px;
+    max-width: 62ch;
+    color: var(--ink-soft);
+    margin: 0 0 30px;
+  }
+  .subhead code {
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+    background: var(--paper-3);
+    padding: 0.1em 0.4em;
+    border: 1px solid var(--line);
+  }
+
+  .badge-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .badge {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    padding: 6px 11px;
+    border: 1px solid var(--line-strong);
+    color: var(--muted);
+    background: var(--paper-2);
+  }
+
+  /* ---------- Section scaffolding ---------- */
+  section.block {
+    margin-top: 56px;
+  }
+  .dim-rule {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 22px;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .dim-rule::before {
+    content: "◂";
+    font-size: 11px;
+  }
+  .dim-rule .line {
+    flex: 1;
+    height: 1px;
+    background: var(--line-strong);
+  }
+  h2.section-title {
+    font-family: var(--font-mono);
+    font-size: 26px;
+    font-weight: 700;
+    margin: 0 0 16px;
+    letter-spacing: -0.01em;
+  }
+  .prose {
+    max-width: 68ch;
+    color: var(--ink-soft);
+  }
+  .prose p { margin: 0 0 16px; }
+  .prose strong { color: var(--ink); }
+
+  /* ---------- General notes (benefits) ---------- */
+  .notes {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 0;
+    border-top: 1px solid var(--line-strong);
+  }
+  .notes li {
+    display: grid;
+    grid-template-columns: 52px 1fr;
+    gap: 18px;
+    padding: 16px 4px;
+    border-bottom: 1px solid var(--line);
+  }
+  .note-num {
+    font-family: var(--font-mono);
+    color: var(--muted);
+    font-size: 13px;
+    padding-top: 2px;
+  }
+  .note-body { color: var(--ink-soft); }
+  .note-body strong { color: var(--ink); font-weight: 700; }
+
+  /* ---------- Diagram panels ---------- */
+  .diagram-panel {
+    position: relative;
+    border: 1.5px solid var(--line-strong);
+    background: var(--paper-2);
+    padding: 22px 20px 18px;
+  }
+  .diagram-caption {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin: 14px 2px 0;
+    border-top: 1px dashed var(--line-strong);
+    padding-top: 10px;
+  }
+  pre.mermaid {
+    background: transparent;
+    overflow-x: auto;
+    margin: 0;
+  }
+
+  /* ---------- Legend / resource catalog ---------- */
+  .legend-panel {
+    position: relative;
+    border: 1.5px solid var(--line-strong);
+    background: var(--paper-2);
+    padding: 6px;
+  }
+  .legend-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  }
+  .legend-cell {
+    padding: 16px;
+    border: 1px solid var(--line);
+    display: flex;
+    gap: 12px;
+  }
+  .legend-code {
+    font-family: var(--font-mono);
+    font-weight: 700;
+    font-size: 13px;
+    color: var(--speckle-deep);
+    background: var(--paper-3);
+    border: 1px solid var(--line-strong);
+    padding: 3px 7px;
+    height: fit-content;
+    letter-spacing: 0.04em;
+  }
+  .legend-cell.is-trigger .legend-code { color: var(--n8n-deep); }
+  .legend-name {
+    font-family: var(--font-sans);
+    font-weight: 700;
+    font-size: 14px;
+    margin: 0 0 4px;
+  }
+  .legend-desc {
+    font-family: var(--font-sans);
+    font-size: 12.5px;
+    color: var(--muted);
+    line-height: 1.45;
+  }
+
+  /* ---------- Footer sheet frame ---------- */
+  footer.sheet-frame {
+    margin-top: 64px;
+    padding-top: 22px;
+    border-top: 1.5px solid var(--line-strong);
+  }
+  .scale-bar {
+    display: flex;
+    align-items: flex-end;
+    height: 18px;
+    margin-bottom: 26px;
+  }
+  .scale-bar i {
+    flex: 1;
+    height: 6px;
+    border-left: 1px solid var(--line-strong);
+  }
+  .scale-bar i:nth-child(odd) { background: var(--line); }
+  .scale-bar i:last-child { border-right: 1px solid var(--line-strong); }
+
+  .footer-grid {
+    display: grid;
+    grid-template-columns: 1.2fr 1fr 1fr;
+    gap: 28px;
+    font-family: var(--font-sans);
+    font-size: 13.5px;
+    color: var(--muted);
+  }
+  .footer-grid h3 {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--ink);
+    margin: 0 0 10px;
+  }
+  .footer-grid ul { list-style: none; margin: 0; padding: 0; }
+  .footer-grid li { margin-bottom: 7px; }
+  .footer-fine {
+    margin-top: 26px;
+    padding-top: 16px;
+    border-top: 1px solid var(--line);
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  @media (max-width: 720px) {
+    .titleblock { grid-template-columns: 1fr 1fr; }
+    .tb-cell:nth-child(2) { border-right: none; }
+    .footer-grid { grid-template-columns: 1fr; }
+    .notes li { grid-template-columns: 34px 1fr; }
+  }
+</style>
+
+<div class="sheet">
+
+  <div class="titleblock">
+    <div class="tb-cell">
+      <span class="tb-label">Project</span>
+      <span class="tb-value">n8n-nodes-speckle</span>
+    </div>
+    <div class="tb-cell">
+      <span class="tb-label">Sheet</span>
+      <span class="tb-value">01 — Overview</span>
+    </div>
+    <div class="tb-cell">
+      <span class="tb-label">Discipline</span>
+      <span class="tb-value">AEC × Automation</span>
+    </div>
+    <div class="tb-cell">
+      <span class="tb-label">License</span>
+      <span class="tb-value">MIT</span>
+    </div>
+  </div>
+
+  <section class="hero">
+    <p class="eyebrow">n8n community node package</p>
+
+    <div class="lockup" aria-hidden="false">
+      <svg width="40" height="40" viewBox="0 0 100 100" role="img" aria-label="Speckle">
+        <defs>
+          <linearGradient id="topFace" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stop-color="#6BB6FF"/>
+            <stop offset="100%" stop-color="#5BA8F5"/>
+          </linearGradient>
+          <linearGradient id="leftFace" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stop-color="#3D4FCC"/>
+            <stop offset="100%" stop-color="#2937AA"/>
+          </linearGradient>
+          <linearGradient id="rightFace" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stop-color="#2196F3"/>
+            <stop offset="100%" stop-color="#1976D2"/>
+          </linearGradient>
+        </defs>
+        <polygon points="20,35 20,75 50,90 50,50" fill="url(#leftFace)"/>
+        <polygon points="50,50 50,90 80,75 80,35" fill="url(#rightFace)"/>
+        <polygon points="20,35 50,20 80,35 50,50" fill="url(#topFace)"/>
+      </svg>
+      <span class="x">×</span>
+      <svg width="40" height="40" viewBox="0 0 100 100" role="img" aria-label="n8n">
+        <circle cx="26" cy="26" r="11" fill="none" stroke="#E8492E" stroke-width="6"/>
+        <circle cx="26" cy="74" r="11" fill="#E8492E"/>
+        <circle cx="78" cy="50" r="11" fill="#E8492E"/>
+        <path d="M35,29 L69,47" stroke="#E8492E" stroke-width="6" fill="none"/>
+        <path d="M35,71 L69,53" stroke="#E8492E" stroke-width="6" fill="none"/>
+      </svg>
+      <span class="wordmark-n8n">n8<span>n</span></span>
+    </div>
+
+    <h1 class="headline">Speckle's BIM data,<br><span class="accent-speckle">wired</span> straight into <span class="accent-n8n">n8n.</span></h1>
+
+    <p class="subhead">
+      <strong>n8n-nodes-speckle</strong> is an open-source community node that exposes the
+      entire <a href="https://speckle.systems/">Speckle</a> GraphQL API — projects, models,
+      versions, objects, comments, webhooks — as native <a href="https://n8n.io/">n8n</a>
+      building blocks, plus a dedicated trigger node that starts a workflow the moment
+      something changes on a Speckle project. Install with <code>npm install n8n-nodes-speckle</code>.
+    </p>
+
+    <div class="badge-row">
+      <span class="badge">11 resources</span>
+      <span class="badge">1 trigger node</span>
+      <span class="badge">GraphQL + REST</span>
+      <span class="badge">Revit · Tekla · IFC</span>
+      <span class="badge">MIT licensed</span>
+    </div>
+  </section>
+
+  <section class="block">
+    <div class="dim-rule"><span>What it is</span><span class="line"></span></div>
+    <h2 class="section-title">A BIM data platform, made schedulable.</h2>
+    <div class="prose">
+      <p>
+        Speckle is the open-source data platform for architecture, engineering, and
+        construction — it stores versioned, structured 3D models and lets any tool
+        (Revit, Rhino, Tekla, IFC pipelines) read and write to the same source of truth
+        over GraphQL. n8n is the workflow-automation canvas that connects that kind of
+        API to everything else a team runs: Slack, spreadsheets, databases, dashboards.
+      </p>
+      <p>
+        This package is the bridge between them. It wraps <strong>16 GraphQL queries and
+        27 mutations</strong> behind a single node with eleven resources — <strong>Project,
+        Model, Version, Object, User, Server, Comment, Webhook, Selection, Viewer,
+        Token</strong> — so a BIM workflow becomes a sequence of drag-and-drop steps
+        instead of hand-written API calls. A companion <strong>Speckle Trigger</strong>
+        node manages its own webhook lifecycle, so a workflow can start itself the
+        instant a new version lands.
+      </p>
+    </div>
+  </section>
+
+  <section class="block">
+    <div class="dim-rule"><span>General notes</span><span class="line"></span></div>
+    <h2 class="section-title">What it buys you</h2>
+    <ol class="notes">
+      <li>
+        <span class="note-num">01</span>
+        <span class="note-body"><strong>No polling.</strong> The Speckle Trigger node creates and tears down its own webhook on activation/deactivation — a new version, comment, or model change starts the workflow directly.</span>
+      </li>
+      <li>
+        <span class="note-num">02</span>
+        <span class="note-body"><strong>BIM data, flattened.</strong> Pull ready-to-chart element tables straight out of Revit, Tekla, and IFC object graphs, with category and parameter filtering built in.</span>
+      </li>
+      <li>
+        <span class="note-num">03</span>
+        <span class="note-body"><strong>Model analytics on demand.</strong> Generate element-count breakdowns — beams, walls, floors, columns — for any version, ready to feed a dashboard node.</span>
+      </li>
+      <li>
+        <span class="note-num">04</span>
+        <span class="note-body"><strong>Validation as a workflow step.</strong> Check objects against an IDS specification or simple property rules, and write corrected values back as a new version automatically.</span>
+      </li>
+      <li>
+        <span class="note-num">05</span>
+        <span class="note-body"><strong>Cross-server migration.</strong> Copy — or export/import as a portable payload — a project, model, or version, full object graph included, between two Speckle servers.</span>
+      </li>
+      <li>
+        <span class="note-num">06</span>
+        <span class="note-body"><strong>Viewer, embedded.</strong> Generate an embeddable link or a ready-made <code>&lt;iframe&gt;</code> for the Speckle 3D viewer, for any project, model, or version.</span>
+      </li>
+    </ol>
+  </section>
+
+  <section class="block">
+    <div class="dim-rule"><span>Connection graph</span><span class="line"></span></div>
+    <h2 class="section-title">How the pieces connect</h2>
+    <div class="diagram-panel">
+      <pre class="mermaid">
+flowchart LR
+    subgraph SRC["SPECKLE SERVER"]
+        API["GraphQL + REST API"]
+    end
+    subgraph PKG["N8N-NODES-SPECKLE"]
+        direction TB
+        NODE["Speckle node\n11 resources"]
+        TRIG["Speckle Trigger\nwebhook lifecycle"]
+    end
+    subgraph FLOW["N8N WORKFLOW CANVAS"]
+        WF["Trigger → steps → actions"]
+    end
+    subgraph OUT["DOWNSTREAM"]
+        D1["Dashboards"]
+        D2["Slack / email"]
+        D3["Databases"]
+        D4["Other n8n nodes"]
+    end
+
+    API -- "personal access token" --> NODE
+    API -- "webhook event" --> TRIG
+    NODE --> WF
+    TRIG --> WF
+    WF --> D1
+    WF --> D2
+    WF --> D3
+    WF --> D4
+
+    classDef speckle fill:#2F6FEA,stroke:#131A2B,color:#ffffff,font-weight:bold;
+    classDef n8n fill:#E8492E,stroke:#131A2B,color:#ffffff,font-weight:bold;
+    classDef neutral fill:#ECEEE6,stroke:#131A2B,color:#131A2B;
+    class API speckle
+    class NODE,TRIG n8n
+    class WF,D1,D2,D3,D4 neutral
+      </pre>
+      <p class="diagram-caption">Fig. 1 — one credential, two node types, any downstream system</p>
+    </div>
+  </section>
+
+  <section class="block">
+    <div class="dim-rule"><span>Connection graph</span><span class="line"></span></div>
+    <h2 class="section-title">The trigger's webhook lifecycle</h2>
+    <div class="diagram-panel">
+      <pre class="mermaid">
+sequenceDiagram
+    participant U as You
+    participant N as n8n Workflow
+    participant S as Speckle Server
+
+    U->>N: Activate workflow
+    N->>S: webhookCreate(project, events)
+    S-->>N: webhookId (stored in workflow state)
+    Note over S: Later — a new version is pushed
+    S->>N: POST event payload (e.g. commit_create)
+    N->>N: Run workflow steps
+    U->>N: Deactivate workflow
+    N->>S: webhookDelete(webhookId)
+      </pre>
+      <p class="diagram-caption">Fig. 2 — the trigger owns its webhook end-to-end; nothing to wire up by hand</p>
+    </div>
+  </section>
+
+  <section class="block">
+    <div class="dim-rule"><span>Legend</span><span class="line"></span></div>
+    <h2 class="section-title">Resource index</h2>
+    <div class="legend-panel">
+      <div class="legend-grid">
+        <div class="legend-cell">
+          <span class="legend-code">PRJ</span>
+          <span><span class="legend-name">Project</span><span class="legend-desc">Create, share, invite collaborators, transfer between servers.</span></span>
+        </div>
+        <div class="legend-cell">
+          <span class="legend-code">MDL</span>
+          <span><span class="legend-name">Model</span><span class="legend-desc">Organize versions inside a project.</span></span>
+        </div>
+        <div class="legend-cell">
+          <span class="legend-code">VER</span>
+          <span><span class="legend-name">Version</span><span class="legend-desc">Commits, diffs, move between models.</span></span>
+        </div>
+        <div class="legend-cell">
+          <span class="legend-code">OBJ</span>
+          <span><span class="legend-name">Object</span><span class="legend-desc">BIM extraction, analytics, IDS validation, property rules.</span></span>
+        </div>
+        <div class="legend-cell">
+          <span class="legend-code">USR</span>
+          <span><span class="legend-name">User</span><span class="legend-desc">Active user lookup, search.</span></span>
+        </div>
+        <div class="legend-cell">
+          <span class="legend-code">SRV</span>
+          <span><span class="legend-name">Server</span><span class="legend-desc">Server info and capabilities.</span></span>
+        </div>
+        <div class="legend-cell">
+          <span class="legend-code">CMT</span>
+          <span><span class="legend-name">Comment</span><span class="legend-desc">Threads, replies, mentions.</span></span>
+        </div>
+        <div class="legend-cell">
+          <span class="legend-code">WHK</span>
+          <span><span class="legend-name">Webhook</span><span class="legend-desc">Manual CRUD, plus a connectivity test.</span></span>
+        </div>
+        <div class="legend-cell">
+          <span class="legend-code">SEL</span>
+          <span><span class="legend-name">Selection</span><span class="legend-desc">Cascading project → model → version picker.</span></span>
+        </div>
+        <div class="legend-cell">
+          <span class="legend-code">VWR</span>
+          <span><span class="legend-name">Viewer</span><span class="legend-desc">Embeddable 3D viewer link or iframe.</span></span>
+        </div>
+        <div class="legend-cell">
+          <span class="legend-code">TKN</span>
+          <span><span class="legend-name">Token</span><span class="legend-desc">Personal access token management.</span></span>
+        </div>
+        <div class="legend-cell is-trigger">
+          <span class="legend-code">TRG</span>
+          <span><span class="legend-name">Trigger</span><span class="legend-desc">Separate node — owns the webhook lifecycle automatically.</span></span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="sheet-frame">
+    <div class="scale-bar" aria-hidden="true">
+      <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+    </div>
+    <div class="footer-grid">
+      <div>
+        <h3>Package</h3>
+        <ul>
+          <li>n8n-nodes-speckle · v1.0.0</li>
+          <li>Node.js ≥ 18.17.0</li>
+          <li>MIT license</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Speckle</h3>
+        <ul>
+          <li><a href="https://speckle.systems/">speckle.systems</a></li>
+          <li><a href="https://speckle.guide/">speckle.guide</a></li>
+          <li><a href="https://app.speckle.systems/graphql">GraphQL API explorer</a></li>
+        </ul>
+      </div>
+      <div>
+        <h3>n8n</h3>
+        <ul>
+          <li><a href="https://n8n.io/">n8n.io</a></li>
+          <li><a href="https://docs.n8n.io/">docs.n8n.io</a></li>
+          <li><a href="https://docs.n8n.io/integrations/community-nodes/">Community nodes guide</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-fine">
+      <span>SHEET 01 OF 01</span>
+      <span>SCALE — NOT TO SCALE</span>
+      <span>DRAWN FOR: N8N-NODES-SPECKLE</span>
+    </div>
+  </footer>
+
+</div>

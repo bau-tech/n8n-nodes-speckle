@@ -1,0 +1,633 @@
+<title>n8n + Speckle — Automate your AEC data</title>
+<style>
+  :root {
+    --paper: #F6F3EC;
+    --paper-raised: #FFFFFF;
+    --ink: #171B21;
+    --ink-soft: rgba(23,27,33,0.70);
+    --ink-faint: rgba(23,27,33,0.50);
+    --structural: #2B3990;
+    --structural-light: #6BB6FF;
+    --coral: #E85A3E;
+    --line: rgba(23,27,33,0.14);
+    --line-strong: rgba(23,27,33,0.28);
+
+    --mono: "JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, "Consolas", monospace;
+    --sans: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+
+    --measure: 62ch;
+    color-scheme: light;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #14171C;
+      --paper-raised: #1B1F26;
+      --ink: #ECEAE3;
+      --ink-soft: rgba(236,234,227,0.72);
+      --ink-faint: rgba(236,234,227,0.52);
+      --structural: #8FB0FF;
+      --structural-light: #4C5FD6;
+      --coral: #FF8163;
+      --line: rgba(236,234,227,0.14);
+      --line-strong: rgba(236,234,227,0.28);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #14171C;
+    --paper-raised: #1B1F26;
+    --ink: #ECEAE3;
+    --ink-soft: rgba(236,234,227,0.72);
+    --ink-faint: rgba(236,234,227,0.52);
+    --structural: #8FB0FF;
+    --structural-light: #4C5FD6;
+    --coral: #FF8163;
+    --line: rgba(236,234,227,0.14);
+    --line-strong: rgba(236,234,227,0.28);
+    color-scheme: dark;
+  }
+  :root[data-theme="light"] {
+    --paper: #F6F3EC;
+    --paper-raised: #FFFFFF;
+    --ink: #171B21;
+    --ink-soft: rgba(23,27,33,0.70);
+    --ink-faint: rgba(23,27,33,0.50);
+    --structural: #2B3990;
+    --structural-light: #6BB6FF;
+    --coral: #E85A3E;
+    --line: rgba(23,27,33,0.14);
+    --line-strong: rgba(23,27,33,0.28);
+    color-scheme: light;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--paper);
+    color: var(--ink);
+  }
+  body {
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.6;
+    background-image:
+      linear-gradient(var(--line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--line) 1px, transparent 1px);
+    background-size: 48px 48px;
+    background-position: -1px -1px;
+    overflow-x: hidden;
+  }
+  a { color: inherit; }
+  ::selection { background: var(--coral); color: #fff; }
+
+  .wrap {
+    max-width: 1040px;
+    margin: 0 auto;
+    padding: 0 32px;
+  }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .eyebrow::before {
+    content: "";
+    width: 18px;
+    height: 1px;
+    background: var(--coral);
+    display: inline-block;
+  }
+
+  h1, h2, h3 {
+    font-family: var(--mono);
+    font-weight: 700;
+    text-wrap: balance;
+    margin: 0;
+    letter-spacing: -0.01em;
+  }
+
+  p { margin: 0; }
+  .prose { max-width: var(--measure); }
+  .prose p + p { margin-top: 14px; }
+
+  /* ---------- top bar ---------- */
+  .topbar {
+    padding: 22px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .topbar .wrap {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  .brandmark {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: 14px;
+    letter-spacing: 0.02em;
+  }
+  .brandmark svg { width: 20px; height: 20px; display: block; }
+  .topbar nav {
+    display: flex;
+    gap: 24px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+  .topbar nav a { text-decoration: none; }
+  .topbar nav a:hover, .topbar nav a:focus-visible { color: var(--coral); }
+  .topbar nav a:focus-visible { outline: 2px solid var(--coral); outline-offset: 4px; }
+
+  /* ---------- hero ---------- */
+  .hero {
+    padding: 96px 0 88px;
+  }
+  .hero-top {
+    margin-bottom: 44px;
+  }
+  .hero h1 {
+    font-size: clamp(34px, 5.4vw, 58px);
+    line-height: 1.06;
+    margin-top: 18px;
+  }
+  .hero h1 .accent { color: var(--coral); }
+  .hero-sub {
+    margin-top: 22px;
+    font-size: 18px;
+    color: var(--ink-soft);
+    max-width: 56ch;
+  }
+
+  .connector-stage {
+    margin-top: 64px;
+    display: grid;
+    grid-template-columns: 1fr minmax(120px, 320px) 1fr;
+    align-items: center;
+    gap: 8px;
+  }
+  .mark-card {
+    background: var(--paper-raised);
+    border: 1px solid var(--line);
+    padding: 24px 26px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .mark-card.speckle { justify-self: end; }
+  .mark-card.n8n { justify-self: start; }
+  .mark-card svg { width: 34px; height: 34px; flex-shrink: 0; }
+  .mark-label { display: flex; flex-direction: column; gap: 3px; }
+  .mark-label strong {
+    font-family: var(--mono);
+    font-size: 15px;
+    font-weight: 700;
+  }
+  .mark-label span {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  .n8n-glyph {
+    width: 34px; height: 34px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .n8n-glyph svg { width: 100%; height: 100%; }
+
+  .connector-line { width: 100%; height: 58px; }
+  .connector-line .line {
+    fill: none;
+    stroke: var(--coral);
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-dasharray: 6 8;
+  }
+  .connector-line .lane-out { animation: flow-out 1.6s linear infinite; }
+  .connector-line .lane-in { animation: flow-in 1.6s linear infinite; }
+  .connector-line .head {
+    fill: none;
+    stroke: var(--coral);
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .connector-line .lane-label {
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 0.06em;
+    fill: var(--ink-faint);
+  }
+  @keyframes flow-out { to { stroke-dashoffset: -28; } }
+  @keyframes flow-in { to { stroke-dashoffset: 28; } }
+  @media (prefers-reduced-motion: reduce) {
+    .connector-line .lane-out, .connector-line .lane-in { animation: none; }
+  }
+
+  @media (max-width: 720px) {
+    .connector-stage {
+      grid-template-columns: 1fr;
+      justify-items: stretch;
+    }
+    .mark-card.speckle, .mark-card.n8n { justify-self: stretch; }
+    .connector-line { transform: rotate(90deg); height: 78px; margin: 4px auto; width: 58px; }
+  }
+
+  /* ---------- section shell ---------- */
+  section { padding: 76px 0; border-top: 1px solid var(--line); }
+  .section-head { display: flex; flex-direction: column; gap: 14px; margin-bottom: 48px; }
+  .section-head h2 { font-size: clamp(24px, 3.2vw, 32px); }
+
+  /* ---------- benefits ---------- */
+  .benefits {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+  }
+  .benefit {
+    background: var(--paper);
+    padding: 32px 34px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .benefit .tag {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--coral);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .benefit .tag::before {
+    content: "";
+    width: 7px; height: 7px;
+    background: var(--coral);
+    display: inline-block;
+  }
+  .benefit h3 { font-size: 18.5px; line-height: 1.3; }
+  .benefit p { color: var(--ink-soft); font-size: 15px; }
+  .benefit.wide {
+    grid-column: 1 / -1;
+    border-top: 2px solid var(--coral);
+  }
+  .benefit.wide h3 { font-size: 20px; max-width: 46ch; }
+  .benefit.wide p { max-width: 68ch; font-size: 15.5px; }
+
+  @media (max-width: 720px) {
+    .benefits { grid-template-columns: 1fr; }
+  }
+
+  /* ---------- flow diagram ---------- */
+  .flow {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    flex-wrap: wrap;
+  }
+  .flow-node {
+    background: var(--paper-raised);
+    border: 1px solid var(--line);
+    padding: 22px 24px;
+    flex: 1 1 220px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 200px;
+  }
+  .flow-node .k {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  .flow-node .v { font-size: 15.5px; font-weight: 600; }
+  .flow-node .d { font-size: 13.5px; color: var(--ink-soft); line-height: 1.5; }
+  .flow-arrow {
+    flex: 0 0 56px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--ink-faint);
+  }
+  .flow-arrow svg { width: 32px; height: 16px; }
+  @media (max-width: 780px) {
+    .flow { flex-direction: column; }
+    .flow-arrow { flex-basis: 32px; }
+    .flow-arrow svg { transform: rotate(90deg); }
+  }
+
+  .flow-note {
+    margin-top: 22px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--ink-faint);
+  }
+
+  /* ---------- install strip ---------- */
+  .install {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+    flex-wrap: wrap;
+    background: var(--ink);
+    color: var(--paper);
+    padding: 30px 34px;
+  }
+  .install code {
+    font-family: var(--mono);
+    font-size: 15px;
+  }
+  .install .install-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    opacity: 0.55;
+    margin-bottom: 6px;
+    display: block;
+  }
+
+  /* ---------- title block footer ---------- */
+  footer { padding: 60px 0 80px; }
+  .titleblock {
+    border: 1px solid var(--line-strong);
+  }
+  .titleblock-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+  }
+  .titleblock-row + .titleblock-row { border-top: 1px solid var(--line); }
+  .titleblock-cell {
+    padding: 16px 18px;
+    border-left: 1px solid var(--line);
+  }
+  .titleblock-cell:first-child { border-left: none; }
+  .titleblock-cell .k {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin-bottom: 5px;
+  }
+  .titleblock-cell .v {
+    font-family: var(--mono);
+    font-size: 13.5px;
+  }
+  @media (max-width: 640px) {
+    .titleblock-row { grid-template-columns: repeat(2, 1fr); }
+  }
+  .footer-note {
+    margin-top: 20px;
+    font-size: 13.5px;
+    color: var(--ink-faint);
+  }
+</style>
+
+<div class="topbar">
+  <div class="wrap">
+    <div class="brandmark">
+      <svg viewBox="0 0 100 100" aria-hidden="true">
+        <defs>
+          <linearGradient id="tf" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stop-color="#6BB6FF"/><stop offset="100%" stop-color="#5BA8F5"/>
+          </linearGradient>
+          <linearGradient id="lf" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stop-color="#3D4FCC"/><stop offset="100%" stop-color="#2937AA"/>
+          </linearGradient>
+          <linearGradient id="rf" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stop-color="#2196F3"/><stop offset="100%" stop-color="#1976D2"/>
+          </linearGradient>
+        </defs>
+        <polygon points="20,35 20,75 50,90 50,50" fill="url(#lf)"/>
+        <polygon points="50,50 50,90 80,75 80,35" fill="url(#rf)"/>
+        <polygon points="20,35 50,20 80,35 50,50" fill="url(#tf)"/>
+      </svg>
+      speckle × n8n
+    </div>
+    <nav>
+      <a href="#benefits">Why</a>
+      <a href="#flow">How it fits</a>
+      <a href="#install">Install</a>
+    </nav>
+  </div>
+</div>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="hero-top">
+      <span class="eyebrow">Community node · AEC ⇄ Automation</span>
+      <h1>Your Speckle data,<br>on <span class="accent">autopilot</span>.</h1>
+      <p class="hero-sub">A native n8n integration for Speckle — the open-source data hub for AEC. Pull projects, models, and versions out of Speckle, and push versions, comments, properties, and files back in — both directions, one node, no scraper or API glue code.</p>
+    </div>
+
+    <div class="connector-stage" role="img" aria-label="Speckle connected to n8n">
+      <div class="mark-card speckle">
+        <svg viewBox="0 0 100 100" aria-hidden="true">
+          <defs>
+            <linearGradient id="tf2" x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stop-color="#6BB6FF"/><stop offset="100%" stop-color="#5BA8F5"/>
+            </linearGradient>
+            <linearGradient id="lf2" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stop-color="#3D4FCC"/><stop offset="100%" stop-color="#2937AA"/>
+            </linearGradient>
+            <linearGradient id="rf2" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stop-color="#2196F3"/><stop offset="100%" stop-color="#1976D2"/>
+            </linearGradient>
+          </defs>
+          <polygon points="20,35 20,75 50,90 50,50" fill="url(#lf2)"/>
+          <polygon points="50,50 50,90 80,75 80,35" fill="url(#rf2)"/>
+          <polygon points="20,35 50,20 80,35 50,50" fill="url(#tf2)"/>
+        </svg>
+        <div class="mark-label">
+          <strong>Speckle</strong>
+          <span>Source &amp; target</span>
+        </div>
+      </div>
+
+      <svg class="connector-line" viewBox="0 0 320 64" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+        <text class="lane-label" x="4" y="10">READS →</text>
+        <path class="line lane-out" d="M4,20 H306"/>
+        <path class="head" d="M296,12 L308,20 L296,28"/>
+
+        <path class="line lane-in" d="M4,44 H306"/>
+        <path class="head" d="M14,36 L2,44 L14,52"/>
+        <text class="lane-label" x="4" y="61">← WRITES</text>
+      </svg>
+
+      <div class="mark-card n8n">
+        <div class="n8n-glyph" aria-hidden="true">
+          <svg viewBox="0 0 34 34">
+            <circle cx="7" cy="17" r="5" fill="none" stroke="#E85A3E" stroke-width="2.5"/>
+            <circle cx="27" cy="7" r="5" fill="none" stroke="#E85A3E" stroke-width="2.5"/>
+            <circle cx="27" cy="27" r="5" fill="#E85A3E"/>
+            <path d="M11.5,15 L23,9" stroke="#E85A3E" stroke-width="2.5"/>
+            <path d="M11.5,19 L23,25" stroke="#E85A3E" stroke-width="2.5"/>
+          </svg>
+        </div>
+        <div class="mark-label">
+          <strong>n8n</strong>
+          <span>Orchestration</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<section id="benefits">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">Why teams add this node</span>
+      <h2>Less plumbing. More building.</h2>
+      <p class="prose" style="color:var(--ink-soft)">Speckle already holds your project's structured truth. n8n already talks to everything else your team uses. This node is the missing two-way pipe between them — built for people who'd rather configure a workflow than maintain a script.</p>
+    </div>
+
+    <div class="benefits">
+      <div class="benefit">
+        <span class="tag">Automate</span>
+        <h3>Retire the manual export</h3>
+        <p>Stop asking someone to open the viewer, export a schedule, and paste it into a spreadsheet. Let a new version trigger the whole reporting chain automatically.</p>
+      </div>
+      <div class="benefit">
+        <span class="tag">React</span>
+        <h3>Respond the moment a model changes</h3>
+        <p>A dedicated trigger starts your workflow the instant a version lands, a comment is left, or a model updates — no polling, no webhook plumbing to babysit.</p>
+      </div>
+      <div class="benefit">
+        <span class="tag">Connect</span>
+        <h3>Reach every tool your team already uses</h3>
+        <p>Speckle data becomes just another step in n8n — hand it to Slack, a database, a spreadsheet, an email, or any of the hundreds of apps n8n already speaks to.</p>
+      </div>
+      <div class="benefit">
+        <span class="tag">Understand</span>
+        <h3>Speaks Revit, IFC, and Tekla — not just geometry</h3>
+        <p>Built for real BIM data, not generic 3D blobs: it reasons about categories, parameters, and element types the way your discipline already does.</p>
+      </div>
+      <div class="benefit wide">
+        <span class="tag">Two-way</span>
+        <h3>It doesn't just watch Speckle — it acts on it</h3>
+        <p>Everything above runs in reverse just as easily: a form submission, a database update, or a schedule can create a new project or model, commit a new version, update an object's properties, drop in a comment, or import a file — straight from a workflow, with no direct API calls of your own.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="flow">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">The shape of it</span>
+      <h2>Reads. Writes. Same node, either direction.</h2>
+    </div>
+
+    <div class="flow">
+      <div class="flow-node">
+        <span class="k">Source &amp; target</span>
+        <span class="v">Speckle</span>
+        <span class="d">Projects, models, and versions to read — or a new version, comment, property update, or file import to write.</span>
+      </div>
+      <div class="flow-arrow">
+        <svg viewBox="0 0 32 16" aria-hidden="true"><path d="M6,8 H26 M20,2 L26,8 L20,14 M6,2 L0,8 L6,14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="flow-node">
+        <span class="k">Orchestration</span>
+        <span class="v">n8n workflow</span>
+        <span class="d">Watches Speckle and acts on it in the same workflow — visually, without custom infrastructure.</span>
+      </div>
+      <div class="flow-arrow">
+        <svg viewBox="0 0 32 16" aria-hidden="true"><path d="M6,8 H26 M20,2 L26,8 L20,14 M6,2 L0,8 L6,14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="flow-node">
+        <span class="k">Source &amp; target</span>
+        <span class="v">Anywhere</span>
+        <span class="d">Slack, email, spreadsheets, databases, forms, or the next 400+ apps n8n adds — feeding Speckle or fed by it.</span>
+      </div>
+    </div>
+    <p class="flow-note">// no polling scripts. no bespoke API glue. one workflow canvas, both directions.</p>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">Get started</span>
+      <h2>Drop it into any n8n instance</h2>
+      <p class="prose" style="color:var(--ink-soft)">Install it like any other community node — no forked runtime, no separate server to babysit. Point it at a Speckle server, add a personal access token, and start building.</p>
+    </div>
+
+    <div class="install">
+      <div>
+        <span class="install-label">Install</span>
+        <code>npm install n8n-nodes-speckle</code>
+      </div>
+      <div>
+        <span class="install-label">Requires</span>
+        <code>n8n · a Speckle server · a personal access token</code>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="titleblock">
+      <div class="titleblock-row">
+        <div class="titleblock-cell">
+          <div class="k">Project</div>
+          <div class="v">n8n-nodes-speckle</div>
+        </div>
+        <div class="titleblock-cell">
+          <div class="k">Type</div>
+          <div class="v">n8n community node</div>
+        </div>
+        <div class="titleblock-cell">
+          <div class="k">License</div>
+          <div class="v">MIT</div>
+        </div>
+        <div class="titleblock-cell">
+          <div class="k">Status</div>
+          <div class="v">Active</div>
+        </div>
+      </div>
+      <div class="titleblock-row">
+        <div class="titleblock-cell">
+          <div class="k">Built for</div>
+          <div class="v">AEC teams on n8n</div>
+        </div>
+        <div class="titleblock-cell">
+          <div class="k">Data model</div>
+          <div class="v">Projects · Models · Versions</div>
+        </div>
+        <div class="titleblock-cell">
+          <div class="k">Trigger</div>
+          <div class="v">Webhook-based, self-managed</div>
+        </div>
+        <div class="titleblock-cell">
+          <div class="k">Runtime</div>
+          <div class="v">Node.js ≥ 18.17</div>
+        </div>
+      </div>
+    </div>
+    <p class="footer-note">Speckle and n8n are trademarks of their respective owners. This is an independent, unofficial community integration.</p>
+  </div>
+</footer>
