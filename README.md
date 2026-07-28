@@ -1,10 +1,28 @@
 # n8n-nodes-speckle
 
-This is an n8n community node that integrates [Speckle](https://speckle.systems/) — the open-source data platform for AEC (Architecture, Engineering, Construction) — into n8n workflows.
+**➜ [View the styled landing page](https://bau-tech.github.io/n8n-nodes-speckle/)**
 
-[n8n](https://n8n.io/) is a [fair-code licensed](https://docs.n8n.io/reference/license/) workflow automation platform.
+**Your Speckle data, on autopilot.**
 
-It exposes Speckle's GraphQL API as a node with 11 resources covering projects, models, versions, objects, comments, webhooks, and more, including BIM-specific helpers for IFC/Revit/Tekla metadata extraction and model analytics — plus a **Speckle Trigger** node that starts workflows on Speckle project events.
+A native n8n integration for [Speckle](https://speckle.systems/) — the open-source data hub for AEC (Architecture, Engineering, Construction). Pull projects, models, and versions out of Speckle, and push versions, comments, properties, and files back in — both directions, one node, no scraper or API glue code.
+
+[n8n](https://n8n.io/) is a [fair-code licensed](https://docs.n8n.io/reference/license/) workflow automation platform. This package exposes Speckle's GraphQL API as a node with 11 resources covering projects, models, versions, objects, comments, webhooks, and more, including BIM-specific helpers for IFC/Revit/Tekla metadata extraction and model analytics — plus a **Speckle Trigger** node that starts workflows on Speckle project events.
+
+```
+Speckle  ⇄  n8n workflow  ⇄  Anywhere
+(reads)     (orchestration)   (Slack, email, spreadsheets,
+(writes)                       databases, forms, 400+ apps)
+```
+
+## Why teams add this node
+
+| | |
+|---|---|
+| **Automate** | **Retire the manual export.** Stop asking someone to open the viewer, export a schedule, and paste it into a spreadsheet. Let a new version trigger the whole reporting chain automatically. |
+| **React** | **Respond the moment a model changes.** A dedicated trigger starts your workflow the instant a version lands, a comment is left, or a model updates — no polling, no webhook plumbing to babysit. |
+| **Connect** | **Reach every tool your team already uses.** Speckle data becomes just another step in n8n — hand it to Slack, a database, a spreadsheet, an email, or any of the hundreds of apps n8n already speaks to. |
+| **Understand** | **Speaks Revit, IFC, and Tekla — not just geometry.** Built for real BIM data, not generic 3D blobs: it reasons about categories, parameters, and element types the way your discipline already does. |
+| **Two-way** | **It doesn't just watch Speckle — it acts on it.** Everything above runs in reverse just as easily: a form submission, a database update, or a schedule can create a new project or model, commit a new version, update an object's properties, drop in a comment, or import a file — straight from a workflow, with no direct API calls of your own. |
 
 ## Installation
 
@@ -139,7 +157,7 @@ npm run test:watch
 npm run test:coverage
 ```
 
-See [tests/](tests/) for the test suite, and [docs/](docs/) for deeper notes on the object-filtering implementation.
+See [tests/](tests/) for the test suite, and [docs/](docs/) for deeper notes on the object-filtering implementation, plus a styled [landing page](docs/landing.html).
 
 ## Publishing
 
