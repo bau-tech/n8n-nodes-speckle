@@ -1,7 +1,5 @@
 # n8n-nodes-speckle
 
-**➜ [View the styled landing page](https://bau-tech.github.io/n8n-nodes-speckle/)**
-
 **Your Speckle data, on autopilot.**
 
 A native n8n integration for [Speckle](https://speckle.systems/) — the open-source data hub for AEC (Architecture, Engineering, Construction). Pull projects, models, and versions out of Speckle, and push versions, comments, properties, and files back in — both directions, one node, no scraper or API glue code.
