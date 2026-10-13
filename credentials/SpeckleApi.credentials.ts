@@ -8,7 +8,7 @@ import {
 export class SpeckleApi implements ICredentialType {
 	name = 'speckleApi';
 	displayName = 'Speckle';
-	documentationUrl = 'https://github.com/bimgeek/speckle-mcp';
+	documentationUrl = 'https://github.com/bau-tech/n8n-nodes-speckle';
 
 	properties: INodeProperties[] = [
 		{
@@ -51,5 +51,16 @@ export class SpeckleApi implements ICredentialType {
 				query: `query { activeUser { id name email } }`,
 			},
 		},
+		// Speckle answers HTTP 200 with `activeUser: null` for an invalid token, so the status code alone proves nothing
+		rules: [
+			{
+				type: 'responseSuccessBody',
+				properties: {
+					key: 'data.activeUser',
+					value: null,
+					message: 'The server did not recognise this token. Check the Personal Access Token and the server URL.',
+				},
+			},
+		],
 	};
 }

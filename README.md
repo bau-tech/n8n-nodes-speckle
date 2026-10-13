@@ -4,7 +4,7 @@
 
 A native n8n integration for [Speckle](https://speckle.systems/) — the open-source data hub for AEC (Architecture, Engineering, Construction). Pull projects, models, and versions out of Speckle, and push versions, comments, properties, and files back in — both directions, one node, no scraper or API glue code.
 
-[n8n](https://n8n.io/) is a [fair-code licensed](https://docs.n8n.io/reference/license/) workflow automation platform. This package exposes Speckle's GraphQL API as a node with 11 resources covering projects, models, versions, objects, comments, webhooks, and more, including BIM-specific helpers for IFC/Revit/Tekla metadata extraction and model analytics — plus a **Speckle Trigger** node that starts workflows on Speckle project events.
+[n8n](https://n8n.io/) is a [fair-code licensed](https://docs.n8n.io/reference/license/) workflow automation platform. This package exposes Speckle's GraphQL API as a node with 10 resources covering projects, models, versions, objects, comments, webhooks, and more, including BIM-specific helpers for IFC/Revit/Tekla metadata extraction and model analytics — plus a **Speckle Trigger** node that starts workflows on Speckle project events.
 
 ```
 Speckle  ⇄  n8n workflow  ⇄  Anywhere
@@ -76,14 +76,13 @@ The credential authenticates against the server's `/graphql` endpoint and is ver
 | **Project** | Create, Update, Delete, Get, Get Many, Get By Name, Search, Get Team, Invite User, Update Role, Remove User, Leave, Get Activity, Import File, Download File, List Blobs, Transfer To Server, Export/Import Transfer Payload |
 | **Model** | Create, Update, Delete, Get, Get Many, Get By Name, Transfer To Server, Export/Import Transfer Payload |
 | **Version** | Create, Update, Delete, Get, Get Many, Diff, Move To Model, Mark Received, Transfer To Server, Export/Import Transfer Payload |
-| **Object** | Create, Get Many, Query, Get Parameters, Filter Objects, Fetch Graph, Get Metadata, Flatten, Traverse, Validate IDs, Update Properties, Object Property Validation, Extract Metadata, Extract IFC Element Table, Extract Tekla Element Table, Extract Revit Element Table, Generate Model Analytics |
+| **Object** | Create, Get Many (summary / flattened / raw output), Filter Objects, Extract Element Table (IFC / Revit / Tekla), Generate Model Analytics, Fetch Graph, Validate IDS, Object Property Validation, Update Properties |
 | **User** | Get Active User, Search |
 | **Server** | Get |
 | **Comment** | Create, Reply, Edit, Archive, Mark Viewed, Get Project Comments |
 | **Webhook** | Create, Update, Delete, Get, Get Many, Test |
 | **Token** | Create, Revoke |
-| **Selection** | Get Selection (interactively pick a project / model / version) |
-| **Viewer** | Get Embed Link, Get HTML Viewer |
+| **Viewer** | Get Embed Link |
 
 There is also a separate **Speckle Trigger** node (see below) for starting workflows on Speckle events, instead of polling with the Webhook resource.
 
@@ -94,7 +93,8 @@ There is also a separate **Speckle Trigger** node (see below) for starting workf
 - **Model analytics** — generate element-count analytics (beams, floors, columns, walls, etc.) for a version.
 - **Property validation & updates** — validate object properties (equals, greater/less than, has value, true/false) and write updates back as a new version.
 - **Cross-server transfer** — copy or export/import projects, models, and versions (with full object graphs) between Speckle servers.
-- **Viewer embedding** — get an embeddable link or ready-to-use HTML snippet for the Speckle 3D viewer.
+- **Viewer embedding** — get an embeddable link and `<iframe>` snippet for the Speckle 3D viewer.
+- **Project / Model / Version pickers** — every Project, Model and Version field can be chosen from a searchable list, pasted as a Speckle URL, or given as an ID.
 - **Debug logging** — an "Enable Debug Logging" toggle on the node logs GraphQL requests/responses (with the token masked) to the n8n console.
 - **Return All pagination** — Project, Model, and Version "Get Many" operations have a "Return All" toggle that pages through the full cursor-based result set instead of capping at `Limit`.
 - **Get By Name lookups** — find a Project or Model by its exact name, without needing to know its ID first.
@@ -123,6 +123,23 @@ Setup:
 
 > The Automation and Workspace resources were removed — they depend on Speckle modules (Automate, Workspaces) that aren't enabled on every self-hosted server and returned server-side errors when tested against one. If your server has these modules enabled and you'd like them back, they can be re-added.
 
+## Upgrading from 1.x
+
+Version 2.0.0 changes operation and parameter names without a compatibility layer, so workflows built with 1.x need to be re-pointed by hand:
+
+| 1.x | 2.0 |
+|---|---|
+| Object → Get Metadata, Get Many (old), Flatten, Traverse | Object → Get Many, Output: Summary |
+| Object → Extract Metadata | Object → Get Many, Output: Flattened |
+| Object → Get Parameters | Object → Get Many, Output: Raw (to inspect real property names) or Fetch Graph |
+| Object → Query | Object → Filter Objects, Output: Match Summary |
+| Object → Extract IFC / Revit / Tekla Element Table | Object → Extract Element Table, Source Application: IFC / Revit / Tekla |
+| Selection → Get Selection | Use the Project / Model / Version pickers on any operation; Version → Get returns the version details |
+| Viewer → Get HTML Viewer | Viewer → Get Embed Link (returns `url` and `iframe`) |
+| Project/Model ID on Update and Delete, "Model ID" on Version → Create | The standard Project and Model pickers |
+
+Project, Model and Version fields are now pickers. Plain IDs supplied by expressions still work.
+
 ## Example Usage
 
 ### List all projects
@@ -136,9 +153,9 @@ Manual Trigger → Speckle
 ```
 Manual Trigger → Speckle
   Resource: Object
-  Operation: Extract Revit Element Table
-  Project ID: your-project-id
-  Version/Object ID: your-version-id
+  Operation: Extract Element Table
+  Source Application: Revit
+  Project / Model / Version: pick from the list, or paste a Speckle URL or ID
 ```
 
 ### React to a new model version (webhook)

@@ -1,5 +1,7 @@
 # Filter Objects Debugging Guide
 
+> **Version 2 note:** the former **Query** operation is now **Filter Objects** with **Output: Match Summary**, and **Get Parameters** / **Get Metadata** are now **Get Many** (use **Output: Raw** to inspect real property names). Project, Model and Version are pickers that accept a list choice, a Speckle URL, or an ID.
+
 > This guide covers the current node UI (**Property to Search** dropdown, **Match Type**, **Search Value**/**Custom Property Name**) — see [filter-objects-guide.md](filter-objects-guide.md) for full parameter documentation. If you're on an older build, rebuild first (`npm run build`) — several "returns nothing" causes below were real bugs that are now fixed.
 
 ## Issue: "Always Returns Nothing"
@@ -29,7 +31,6 @@ Check the n8n server console (or `journalctl -u n8n` if self-hosted) for these l
 [filterObjects] Returning 0 objects
 ```
 
-(Replace `filterObjects` with `query` if that's the operation you ran.)
 
 **What these logs tell you:**
 
@@ -42,7 +43,7 @@ Check the n8n server console (or `journalctl -u n8n` if self-hosted) for these l
 #### Issue 1: Fetched 0 objects
 
 **Cause**: The root object couldn't be resolved from the given Version ID.
-**Solution**: Verify Project ID, Model ID, and Version ID with **Get Metadata** first.
+**Solution**: Verify Project ID, Model ID, and Version ID with **Get Many** first.
 
 #### Issue 2: Fetched > 0, found 0 matches
 
@@ -50,7 +51,7 @@ Check the n8n server console (or `journalctl -u n8n` if self-hosted) for these l
 **Solutions**:
 
 1. Switch to the **Query** operation — same search, but the response includes `totalObjects` and per-match detail.
-2. Use **Get Parameters** on a sample object to see real property names and values (including their exact language/casing).
+2. Use **Get Many** (Output: Raw) on a sample object to see real property names and values (including their exact language/casing).
 3. Switch **Match Type** from `Equals Value` to `Contains Value` first — real values are often longer/localized than expected.
 4. If searching `Speckle Type`, switch to `Category` instead (see caveat above).
 
@@ -71,7 +72,7 @@ This was a real bug in old builds; if you still see it, rebuild the node — it 
 
 ```yaml
 Resource: Object
-Operation: Get Metadata
+Operation: Get Many
 Project ID: your_project_id
 Model ID: your_model_id
 Version ID: your_version_id
@@ -83,7 +84,9 @@ If this doesn't work, your IDs are wrong — fix that before touching the filter
 
 ```yaml
 Resource: Object
-Operation: Get Parameters
+Operation: Get Many
+Output: Raw
+Max Elements: 5
 Project ID: your_project_id
 Model ID: your_model_id
 Version ID: your_version_id
@@ -95,7 +98,8 @@ Pick any real object ID from your model (e.g. one you can see in the Speckle vie
 
 ```yaml
 Resource: Object
-Operation: Query
+Operation: Filter Objects
+Output: Match Summary
 Property to Search: Category
 Match Type: Contains Value
 Search Value: Wall
@@ -211,7 +215,7 @@ Search Value: Wall
 
 **Result**: still 0 matches.
 
-### Debug step: Get Parameters on a wall visible in the Speckle viewer
+### Debug step: Get Many (Output: Raw) on a wall visible in the Speckle viewer
 
 **Result**: `"category": "Wände"` — the model is authored in German.
 
@@ -295,7 +299,7 @@ Search: `Custom Property` / `properties.Parameters.Instance Parameters.GroupName
 ## Best Practices
 
 1. **Always start with Query** — see exactly what's being found (and its real language/casing) before switching to Filter Objects.
-2. **Use Get Parameters on a known object first** — don't guess property names or their language.
+2. **Use Get Many (Output: Raw) on a known object first** — don't guess property names or their language.
 3. **Prefer Contains over Equals** until you've confirmed the exact value.
 4. **If searching for an element type, use Category — never Speckle Type.**
 5. **Increase Max Nodes gradually** — start at 1000, raise only if `totalObjects` from Query hits your limit.
@@ -305,8 +309,8 @@ Search: `Custom Property` / `properties.Parameters.Instance Parameters.GroupName
 
 ## Quick Diagnosis Checklist
 
-- [ ] Verified Project/Model/Version IDs (test with Get Metadata)
-- [ ] Checked real property names **and language** using Get Parameters
+- [ ] Verified Project/Model/Version IDs (test with Get Many)
+- [ ] Checked real property names **and language** using Get Many (Output: Raw)
 - [ ] Tested with Query operation first
 - [ ] Confirmed `totalObjects > 0` in the Query response
 - [ ] Increased Max Nodes To Inspect if hitting the limit
@@ -321,6 +325,6 @@ Search: `Custom Property` / `properties.Parameters.Instance Parameters.GroupName
 If Filter Objects still returns nothing after following this guide, share:
 
 1. The console log lines (`[filterObjects] Fetched X objects... Searched X objects, found Y matches`)
-2. The result from **Get Parameters** on an object you can see in the Speckle viewer
+2. The result from **Get Many** (Output: Raw) on an object you can see in the Speckle viewer
 3. Your exact Property to Search / Match Type / Search Value
 4. What you expected to find (e.g. "I can see 10 walls in the Speckle viewer")

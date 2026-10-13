@@ -1,5 +1,7 @@
 # Filter Objects by Property - User Guide
 
+> **Version 2 note:** the former **Query** operation is now **Filter Objects** with **Output: Match Summary**, and **Get Parameters** / **Get Metadata** are now **Get Many** (use **Output: Raw** to inspect real property names). Project, Model and Version are pickers that accept a list choice, a Speckle URL, or an ID.
+
 ## Overview
 
 The **Filter Objects** operation (`resource: object`, `operation: filterObjects`) searches through a Speckle model version and returns only the objects that match a property criterion — useful for extracting specific types of objects (walls, doors, beams, …) or objects with particular property values. The **Query** operation runs the exact same search but returns lightweight match metadata instead of the full objects, for debugging/exploration.
@@ -62,9 +64,9 @@ On newer connectors, **every BIM element from the same source application shares
 
 ### ⚠️ Category values are in the model's authoring language
 
-`category` holds whatever string the source application's UI uses — if a Revit model was authored in German, categories are German (`Wände`, `Türen`, `Geschossdecken`), not English (`Walls`, `Doors`, `Floors`). There's no server-side translation. Use **Get Parameters** on a sample object first if you don't know the model's language, or use **Contains** with a short language-appropriate fragment.
+`category` holds whatever string the source application's UI uses — if a Revit model was authored in German, categories are German (`Wände`, `Türen`, `Geschossdecken`), not English (`Walls`, `Doors`, `Floors`). There's no server-side translation. Use **Get Many** (Output: Raw) on a sample object first if you don't know the model's language, or use **Contains** with a short language-appropriate fragment.
 
-If you need locale-independent category filtering, use the dedicated **Extract Revit Element Table** operation instead — its Category dropdown matches against Revit's internal `BuiltInCategory` (`OST_Walls`, etc.), which is the same regardless of the model's UI language, and only falls back to the literal category string if that fails.
+If you need locale-independent category filtering, use the dedicated **Extract Element Table** (Source Application: Revit) operation instead — its Category dropdown matches against Revit's internal `BuiltInCategory` (`OST_Walls`, etc.), which is the same regardless of the model's UI language, and only falls back to the literal category string if that fails.
 
 ---
 
@@ -175,7 +177,7 @@ Search Value: InstanceProxy
 1. **Try Query first** — its `totalObjects` field tells you how many objects were actually inspected, and `matches` shows exactly what matched.
 2. **Switch Match Type from Equals to Contains** — real values (especially category/family) are often longer or differently-cased than expected.
 3. **Check the model's authoring language** — categories, families, and levels are not translated; a German model needs German search terms.
-4. **Verify the property actually exists** on a sample object using **Get Parameters**.
+4. **Verify the property actually exists** on a sample object using **Get Many** (Output: Raw).
 5. **Increase Max Nodes To Inspect** if the model is large — objects past the limit are never inspected.
 6. **Don't use Speckle Type to search for an element type** — use Category instead (see caveat above).
 

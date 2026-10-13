@@ -1,5 +1,7 @@
 # Filter Objects - Quick Reference
 
+> **Version 2 note:** the former **Query** operation is now **Filter Objects** with **Output: Match Summary**, and **Get Parameters** / **Get Metadata** are now **Get Many** (use **Output: Raw** to inspect real property names). Project, Model and Version are pickers that accept a list choice, a Speckle URL, or an ID.
+
 > Field names below match the current node UI: **Property to Search** (dropdown), **Match Type**, **Search Value** / **Custom Property Name**. See [filter-objects-guide.md](filter-objects-guide.md) for full docs and [filter-objects-debugging.md](filter-objects-debugging.md) if you're getting nothing.
 
 ## Match Type cheat sheet
@@ -32,12 +34,12 @@
 
 ## ⚠️ Category/Family/Level are not translated
 
-They hold whatever string the source app's UI language uses. A German Revit model has `Wände`, not `Walls`; `Türen`, not `Doors`. If Contains/Equals against the English term finds nothing, run **Get Parameters** on a known object first to see the real value.
+They hold whatever string the source app's UI language uses. A German Revit model has `Wände`, not `Walls`; `Türen`, not `Doors`. If Contains/Equals against the English term finds nothing, run **Get Many** (Output: Raw) on a known object first to see the real value.
 
 ## Debugging Checklist (If Getting Nothing)
 
-1. ✅ **Test basic connectivity**: use **Get Metadata** to verify your IDs
-2. ✅ **Inspect real properties**: use **Get Parameters** to see actual names *and language*
+1. ✅ **Test basic connectivity**: use **Get Many** to verify your IDs
+2. ✅ **Inspect real properties**: use **Get Many** (Output: Raw) to see actual names *and language*
 3. ✅ **Use Query first**: switch from Filter Objects to Query — its response includes `totalObjects` and per-match detail
 4. ✅ **Check console logs**: look for `[filterObjects] Fetched X objects... Searched X objects, found Y matches`
 5. ✅ **Try Contains before Equals**
@@ -50,7 +52,7 @@ They hold whatever string the source app's UI language uses. A German Revit mode
 | --- | --- | --- |
 | `Speckle Type` / Contains / `Wall` | `Category` / Contains / `Walls` (or localized) | Speckle Type is the same value for every element on newer connectors |
 | `Category` / Equals / `Walls` on a German model | `Category` / Contains / `Wände` | Category values aren't translated |
-| `Material` / any value, on Revit | Use `Extract Revit Element Table` and read `Material Quantities` | Revit has no simple top-level material field |
+| `Material` / any value, on Revit | Use `Extract Element Table` (Source Application: Revit) and read `Material Quantities` | Revit has no simple top-level material field |
 | Max Nodes: 100 | Max Nodes: 1000–5000 | Too small a limit misses objects entirely |
 
 ## Property Paths by Source (for Custom Property)

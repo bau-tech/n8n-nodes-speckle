@@ -177,6 +177,11 @@ export const queries = {
             createdAt
             updatedAt
             archived
+            author {
+              id
+              name
+              avatar
+            }
             replies {
               totalCount
               items {

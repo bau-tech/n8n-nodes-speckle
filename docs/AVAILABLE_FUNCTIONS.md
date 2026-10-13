@@ -2,7 +2,7 @@
 
 This document catalogs every operation exposed by the **Speckle** n8n node (`nodes/Speckle/Speckle.node.ts`) and the separate **Speckle Trigger** node (`nodes/Speckle/SpeckleTrigger.node.ts`), the underlying GraphQL/REST calls and helper functions that power them, and a set of suggestions for functionality that could be added next.
 
-The Speckle node exposes **11 resources**. Each resource has an `Operation` dropdown; the tables below list every operation, what it does, and the key input fields it needs.
+The Speckle node exposes **10 resources**. Each resource has an `Operation` dropdown; the tables below list every operation, what it does, and the key input fields it needs.
 
 ---
 
@@ -22,7 +22,7 @@ The Speckle node exposes **11 resources**. Each resource has an `Operation` drop
 | Update Role | `updateRole` | Change (or revoke, via "Remove Access") a collaborator's role |
 | Remove User | `remove` | Remove a user from a project |
 | Leave | `leave` | Leave a project |
-| Get Activity | `getActivity` | Get the project's activity stream |
+| Get Activity | `getActivity` | List the most recent versions across all models of the project |
 | Import File | `importFile` | Upload and import a file (IFC, OBJ, etc.) into a model |
 | Download File | `downloadFile` | Download a previously uploaded blob by ID |
 | List Blobs | `listBlobs` | List all blobs (files) attached to a project |
@@ -30,7 +30,7 @@ The Speckle node exposes **11 resources**. Each resource has an `Operation` drop
 | Export Transfer Payload | `exportPayload` | Export the project as a portable JSON payload for a second node/run to import |
 | Import Transfer Payload | `importPayload` | Import a payload produced by "Export Transfer Payload" |
 
-Accepts a project URL or raw ID in the Project ID field (`cleanSpeckleId()` strips `https://.../projects/<id>` down to `<id>`).
+Project, Model and Version fields are pickers: choose from a searchable list, paste a Speckle URL, or enter an ID (`resolveSpeckleId()` reduces all three to the bare ID).
 
 ---
 
@@ -77,20 +77,12 @@ This is the largest resource — most of the BIM-specific value-add lives here.
 | Operation | Value | Description |
 |---|---|---|
 | Create | `create` | Create a new object from a raw JSON payload, optionally as a new version (`SpeckleClient.uploadObjects`) |
-| Get Many | `getAll` | Get objects from a version |
-| Query | `query` | Query objects by property path/value |
-| Get Parameters | `getParameters` | Retrieve all parameters of a single object (beam, wall, etc.) |
-| Filter Objects | `filterObjects` | Return objects matching a property filter |
-| Fetch Graph | `fetchGraph` | Fetch the complete object graph (root + all referenced children) |
-| Get Metadata | `getMetadata` | Get object metadata only, no geometry (fast) |
-| Flatten | `flatten` | Export a flat list of all objects with simplified properties (`objectUtils.flattenObjectTree`) |
-| Validate IDS | `validateIds` | Validate objects against an IDS (Information Delivery Specification) XML file (`idsValidator.validateObjectsAgainstIds`) |
-| Traverse | `traverse` | Advanced object-tree traversal with filtering |
-| Extract Metadata | `extractMetadata` | Extract a flattened metadata table from objects (Revit/Tekla/IFC generic) |
-| Extract IFC Element Table | `extractElementTable` | Flat IFC element table — one row per element, IFC property sets as columns |
-| Extract Tekla Element Table | `extractTeklaTable` | Flat Tekla Structures element table, with Tekla-specific filters + user properties |
-| Extract Revit Element Table | `extractRevitTable` | Flat Revit element table, with category filtering + Revit parameter columns |
+| Get Many | `getAll` | Get the elements of a version without geometry. **Output**: Summary (key fields + a `parameters` object), Flattened (all properties as columns, `metadataExtractor.extractMetadataFromObject`), or Raw (objects as stored, including containers) |
+| Filter Objects | `filterObjects` | Return elements matching a property filter. **Output**: Matching Objects, or Match Summary (matched IDs/keys/values plus `totalObjects`) |
+| Extract Element Table | `extractElementTable` | Flat table, one row per element. **Source Application**: Auto-detect, IFC, Revit (category filter + parameter columns) or Tekla (element-type filter + user properties) |
 | Generate Model Analytics | `analyzeModel` | Chart-ready analytics: element counts by category (beams, floors, columns, walls, …) (`metadataExtractor.buildModelAnalytics`) |
+| Fetch Graph | `fetchGraph` | Fetch an object by ID with everything it references, including geometry |
+| Validate IDS | `validateIds` | Validate objects against an IDS (Information Delivery Specification) XML file (`idsValidator.validateObjectsAgainstIds`) |
 | Object Property Validation | `validateProperties` | Validate object properties against rules: equals, greater than, smaller than, has value, true, false |
 | Update Properties | `updateProperties` | Update specific properties of an object and optionally commit a new version |
 
@@ -135,20 +127,13 @@ This is the largest resource — most of the BIM-specific value-add lives here.
 
 > Note: this is a manual CRUD resource for managing webhooks directly. For automatically starting a workflow on Speckle events, use the separate **Speckle Trigger** node instead (see below).
 
-## 9. Selection
+## 9. Viewer
 
 | Operation | Value | Description |
 |---|---|---|
-| Get Selection | `getSelection` | Interactive project → model → version picker (cascading dropdowns via `loadOptionsMethod`) |
+| Get Embed Link | `getEmbedLink` | Get an embeddable URL and `<iframe>` snippet for the Speckle 3D Viewer |
 
-## 10. Viewer
-
-| Operation | Value | Description |
-|---|---|---|
-| Get Embed Link | `getEmbedLink` | Get an embeddable URL for the Speckle 3D Viewer |
-| Get HTML Viewer | `getHtmlViewer` | Get a ready-to-use `<iframe>` HTML snippet with the viewer embedded |
-
-## 11. Token
+## 10. Token
 
 | Operation | Value | Description |
 |---|---|---|
@@ -157,7 +142,7 @@ This is the largest resource — most of the BIM-specific value-add lives here.
 
 ---
 
-## 12. Speckle Trigger (separate node, `nodes/Speckle/SpeckleTrigger.node.ts`)
+## 11. Speckle Trigger (separate node, `nodes/Speckle/SpeckleTrigger.node.ts`)
 
 Unlike the Speckle node's resource/operation model above, **Speckle Trigger** is a dedicated `ITriggerNode` (group `trigger`) that manages a Speckle webhook automatically instead of requiring manual Webhook-resource CRUD.
 
@@ -182,7 +167,7 @@ Lifecycle: on workflow activation the node calls the `webhookCreate` mutation fo
 ## Cross-cutting features
 
 - **Debug logging** — an "Enable Debug Logging" toggle logs every GraphQL request/response to the n8n console with the auth token masked.
-- **ID cleaning** — `cleanSpeckleId()` accepts either a raw ID or a full project/stream URL in ID fields.
+- **Project / Model / Version pickers** — resource locators with three modes (searchable list via `searchProjects` / `searchModels` / `searchVersions`, URL, ID). Plain ID strings from expressions are accepted too.
 - **Cross-server transfer** — `project`/`model`/`version` each support both a direct `Transfer To Server` (single node, second credential) and an `Export Transfer Payload` / `Import Transfer Payload` pair (two separate node calls, useful for cross-workflow or cross-execution transfers). Object graphs are walked and re-uploaded via `collectObjectGraph()` + `SpeckleClient.uploadObjects()`, and `sourceApplication` provenance is preserved via `Mark Received` on the destination version.
 - **Return All pagination** — Project, Model, and Version `Get Many` (`getAll`) each have a "Return All" toggle that pages through the full cursor-based result set (via `findProjectByName`/`listProjectModels`-style internal cursor loops) instead of capping at `Limit`. Other `Get Many`/list-style operations (Object, Webhook, Comment, Search, Get Activity) still take a fixed `Limit` only.
 - **Get By Name lookups** — Project and Model each expose a `Get By Name` operation (`getByName`, backed by the internal `findProjectByName`/`findModelByName` helpers already used by Transfer/Import Payload) to look up by exact, case-insensitive name instead of ID.
@@ -191,8 +176,7 @@ Lifecycle: on workflow activation the node calls the `webhookCreate` mutation fo
 
 **`api/client.ts` (`SpeckleClient`)**
 - `makeGraphQLRequestDirect` / `makeGraphQLRequest` — GraphQL calls (the latter includes retry/compatibility handling)
-- `makeRestRequest` — REST calls (used for blobs/file import)
-- `fetchObject`, `getObjectClosureIds`, `getObjectChildrenRest` — object graph retrieval
+- `fetchObject`, `getObjectClosureIds` — object graph retrieval
 - `uploadObjects` — batch object upload for commits/transfers
 - `getObjectMetadata`, `getObjectMetadataDynamic`, `queryObjectMetadata` — metadata-only retrieval paths
 
@@ -201,7 +185,6 @@ Lifecycle: on workflow activation the node calls the `webhookCreate` mutation fo
 - `extractMetadataFromObject`, `extractElementRow`, `extractTeklaRow`, `extractRevitRow`
 - `buildModelAnalytics`
 
-**`utils/objectUtils.ts`** — `flattenProperties`, `flattenObjectTree`
 **`utils/idsValidator.ts`** — `validateObjectsAgainstIds`
 **`diffHelper.ts`** — `diffObjectsPaginated`
 
@@ -211,7 +194,7 @@ Lifecycle: on workflow activation the node calls the `webhookCreate` mutation fo
 
 ## Ideas worth considering
 
-Several gaps previously flagged in this doc have since been closed: a dedicated **Speckle Trigger** node now exists (see [section 12](#12-speckle-trigger-separate-node-nodesspecklespeckletriggernodets)), Project/Model/Version `Get Many` got a **Return All** pagination toggle, Project/Model got **Get By Name** lookups, Webhook got a **Test** operation, and Object got a **Create** operation for pushing raw JSON payloads. One idea remains open:
+Several gaps previously flagged in this doc have since been closed: a dedicated **Speckle Trigger** node now exists (see [section 12](#11-speckle-trigger-separate-node-nodesspecklespeckletriggernodets)), Project/Model/Version `Get Many` got a **Return All** pagination toggle, Project/Model got **Get By Name** lookups, Webhook got a **Test** operation, and Object got a **Create** operation for pushing raw JSON payloads. One idea remains open:
 
 1. **Re-add Automate / Workspace resources, opt-in.** The README notes these were removed because they error on servers without those modules enabled. Since that's already known and scoped, re-adding them behind their own resource (so they simply don't appear/error unless selected) would restore functionality for servers that do have Automate/Workspaces on, without regressing the common case.
 

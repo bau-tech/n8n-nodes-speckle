@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-speckle",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "n8n node for interacting with Speckle - AEC data integration",
   "keywords": [
     "n8n-community-node-package",

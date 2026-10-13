@@ -44,6 +44,21 @@ describe('Speckle Node', () => {
             expect(resources).toContain('user');
             expect(resources).toContain('server');
             expect(resources).toContain('comment');
+            expect(resources).not.toContain('selection');
+        });
+
+        it('should offer list / URL / ID pickers for project, model and version', () => {
+            for (const name of ['projectId', 'modelId', 'versionId']) {
+                const fields = speckle.description.properties.filter((p: any) => p.name === name);
+                expect(fields.length).toBeGreaterThan(0);
+                for (const field of fields) {
+                    expect(field.type).toBe('resourceLocator');
+                    expect((field as any).modes.map((m: any) => m.name)).toEqual(['list', 'url', 'id']);
+                }
+            }
+            expect(Object.keys((speckle as any).methods.listSearch)).toEqual(
+                expect.arrayContaining(['searchProjects', 'searchModels', 'searchVersions'])
+            );
         });
     });
 
@@ -129,7 +144,7 @@ describe('Speckle Node', () => {
     });
 
     describe('Object Operations', () => {
-        it('should expose the IFC element table action and the specific Revit/Tekla element table operations', () => {
+        it('should expose the merged object operations', () => {
             const objectOps = speckle.description.properties.find(
                 (p: any) => p.name === 'operation' && p.displayOptions?.show?.resource?.[0] === 'object'
             );
@@ -137,8 +152,11 @@ describe('Speckle Node', () => {
 
             const operations = (objectOps as any).options.map((o: any) => o.value);
             expect(operations).toContain('extractElementTable');
-            expect(operations).toContain('extractTeklaTable');
-            expect(operations).toContain('extractRevitTable');
+            expect(operations).toContain('getAll');
+            expect(operations).toContain('filterObjects');
+            for (const removed of ['extractTeklaTable', 'extractRevitTable', 'query', 'getParameters', 'getMetadata', 'extractMetadata', 'flatten', 'traverse']) {
+                expect(operations).not.toContain(removed);
+            }
             expect(operations).toContain('analyzeModel');
             expect(operations).toContain('validateProperties');
         });

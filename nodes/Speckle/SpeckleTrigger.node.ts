@@ -24,7 +24,7 @@ async function graphqlRequest(
 ): Promise<any> {
 	const response = await ctx.helpers.request({
 		method: 'POST',
-		url: `${credentials.serverUrl}/graphql`,
+		url: `${credentials.serverUrl.replace(/\/+$/, '')}/graphql`,
 		headers: {
 			Authorization: `Bearer ${credentials.token}`,
 			'Content-Type': 'application/json',

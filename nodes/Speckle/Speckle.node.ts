@@ -4,6 +4,8 @@ import {
 	INodeType,
 	INodeTypeDescription,
 	ILoadOptionsFunctions,
+	INodeListSearchResult,
+	INodeProperties,
 	INodePropertyOptions,
 } from 'n8n-workflow';
 import { queries } from './graphql/queries';
@@ -12,7 +14,6 @@ import { SpeckleClient } from './api/client';
 import { SpeckleError } from './utils/errors';
 import { Resource, Operation, SpeckleCredentials } from './types';
 
-import { flattenProperties, flattenObjectTree } from './utils/objectUtils';
 import { validateObjectsAgainstIds } from './utils/idsValidator';
 import { buildModelAnalytics, extractElementRow, extractMetadataFromObject, isRealBIMElement, detectSourceApplicationId } from './metadataExtractor';
 
@@ -42,6 +43,177 @@ function cleanSpeckleId(input: string): string {
 		}
 	}
 	return trimmed;
+}
+
+type SpeckleIdKind = 'project' | 'model' | 'version';
+
+// Which kind of ID each resource-locator parameter holds
+const ID_PARAMETER_KINDS: Record<string, SpeckleIdKind> = {
+	projectId: 'project',
+	modelId: 'model',
+	objectVersionModelId: 'model',
+	targetModelId: 'model',
+	versionId: 'version',
+	versionAId: 'version',
+	versionBId: 'version',
+};
+
+// Turns a resource-locator value (or a plain string from an expression) into a bare ID.
+// Speckle URLs look like /projects/{projectId}/models/{modelId}@{versionId}.
+function resolveSpeckleId(raw: any, kind: SpeckleIdKind): string {
+	const value = raw && typeof raw === 'object' ? raw.value : raw;
+	const text = String(value ?? '').trim();
+	if (!/^https?:\/\//i.test(text)) return text;
+
+	let match: RegExpMatchArray | null;
+	if (kind === 'project') {
+		match = text.match(/\/(?:projects|streams)\/([^/?#@,]+)/);
+	} else if (kind === 'model') {
+		match = text.match(/\/models\/([^/?#@,]+)/);
+	} else {
+		match = text.match(/@([^/?#@,]+)/);
+	}
+	return match ? match[1] : text;
+}
+
+function idLocator(
+	kind: SpeckleIdKind,
+	name: string,
+	displayName: string,
+	description: string,
+	show: NonNullable<NonNullable<INodeProperties['displayOptions']>['show']>,
+	hide?: NonNullable<INodeProperties['displayOptions']>['hide'],
+	required = true,
+): INodeProperties {
+	const searchListMethod = { project: 'searchProjects', model: 'searchModels', version: 'searchVersions' }[kind];
+	const urlPlaceholder = {
+		project: 'https://app.speckle.systems/projects/abc123def4',
+		model: 'https://app.speckle.systems/projects/abc123def4/models/0123456789',
+		version: 'https://app.speckle.systems/projects/abc123def4/models/0123456789@fedcba9876',
+	}[kind];
+
+	return {
+		displayName,
+		name,
+		type: 'resourceLocator',
+		default: { mode: 'list', value: '' },
+		required,
+		description,
+		modes: [
+			{
+				displayName: 'From List',
+				name: 'list',
+				type: 'list',
+				typeOptions: { searchListMethod, searchable: true },
+			},
+			{
+				displayName: 'By URL',
+				name: 'url',
+				type: 'string',
+				placeholder: urlPlaceholder,
+			},
+			{
+				displayName: 'By ID',
+				name: 'id',
+				type: 'string',
+				placeholder: 'abc123def4',
+			},
+		],
+		displayOptions: hide ? { show, hide } : { show },
+	};
+}
+
+const OBJECT_VERSION_OPERATIONS = ['getAll', 'filterObjects', 'extractElementTable', 'analyzeModel', 'updateProperties'];
+
+const SPECKLE_ID_FIELDS: INodeProperties[] = [
+	idLocator('project', 'projectId', 'Project', 'The Speckle project', {
+		resource: ['project'],
+		operation: ['get', 'update', 'delete', 'importFile', 'downloadFile', 'listBlobs', 'invite', 'remove', 'getActivity', 'getTeam', 'leave', 'updateRole', 'transfer', 'exportPayload'],
+	}),
+	idLocator(
+		'project', 'projectId', 'Project', 'The Speckle project',
+		{ resource: ['model', 'version', 'object', 'comment', 'webhook', 'viewer'] },
+		{ operation: ['importPayload', 'validateIds'] },
+	),
+	idLocator('model', 'modelId', 'Model', 'The model to import the file into', {
+		resource: ['project'],
+		operation: ['importFile'],
+	}),
+	idLocator('model', 'modelId', 'Model', 'The Speckle model', {
+		resource: ['model'],
+		operation: ['get', 'update', 'delete', 'transfer', 'exportPayload'],
+	}),
+	idLocator('model', 'modelId', 'Model', 'The Speckle model', {
+		resource: ['version'],
+		operation: ['create', 'getAll', 'get', 'diff', 'transfer', 'exportPayload'],
+	}),
+	idLocator('model', 'modelId', 'Model', 'The Speckle model', {
+		resource: ['object', 'viewer'],
+		operation: [...OBJECT_VERSION_OPERATIONS, 'getEmbedLink'],
+	}),
+	idLocator('version', 'versionId', 'Version', 'The version of the model', {
+		resource: ['version'],
+		operation: ['get', 'update', 'delete', 'markReceived', 'transfer', 'exportPayload'],
+	}),
+	idLocator('version', 'versionId', 'Version', 'The version of the model', {
+		resource: ['object', 'viewer'],
+		operation: [...OBJECT_VERSION_OPERATIONS, 'getEmbedLink'],
+	}),
+	idLocator('version', 'versionAId', 'Version A (Old)', 'The older version to compare', {
+		resource: ['version'],
+		operation: ['diff'],
+	}),
+	idLocator('version', 'versionBId', 'Version B (New)', 'The newer version to compare', {
+		resource: ['version'],
+		operation: ['diff'],
+	}),
+];
+
+// Compact per-element row for Object > Get Many (Summary output)
+function summariseElement(data: any, sourceApplication?: string): Record<string, any> {
+	const props = data.properties ?? {};
+	const family = data.family ?? props.family;
+	const type = data.type ?? props.type;
+	const ifcType = data.ifcType ?? props.ifcType;
+	const profile = data.profile ?? props.profile;
+	const unbox = (group: any): Record<string, any> => {
+		const flat: Record<string, any> = {};
+		if (!group || typeof group !== 'object') return flat;
+		for (const [key, val] of Object.entries(group)) {
+			flat[key] = val && typeof val === 'object' && 'value' in (val as any) ? (val as any).value : val;
+		}
+		return flat;
+	};
+
+	// Revit: v3 connectors nest under properties.Parameters, v2 directly under properties
+	const revitGroups = props.Parameters ?? props;
+	const ifcProps: Record<string, any> = {};
+	for (const pset of Object.values(props['Property Sets'] ?? {})) {
+		if (pset && typeof pset === 'object') Object.assign(ifcProps, pset);
+	}
+
+	return {
+		id: data.id,
+		speckleType: data.speckleType || data.speckle_type,
+		sourceApplication,
+		elementType: ifcType || (family && type ? `${family}:${type}` : null) || profile || data.speckleType || data.speckle_type || 'Unknown',
+		name: data.name,
+		category: data.category,
+		family,
+		type,
+		ifcType,
+		profile,
+		material: data.material ?? props.material,
+		parameters: {
+			...data.parameters,
+			...props.parameters,
+			...(props.userDefinedAttributes ?? props['User Defined Attributes']),
+			...unbox(props.Report),
+			...unbox(revitGroups['Instance Parameters']),
+			...unbox(revitGroups['Type Parameters']),
+			...ifcProps,
+		},
+	};
 }
 
 type TransferVersionMode = 'none' | 'latest' | 'all';
@@ -674,6 +846,7 @@ export class Speckle implements INodeType {
 		},
 		inputs: ['main'],
 		outputs: ['main'],
+		usableAsTool: true,
 		credentials: [
 			{
 				name: 'speckleApi',
@@ -723,10 +896,6 @@ export class Speckle implements INodeType {
 					{
 						name: 'Viewer',
 						value: 'viewer',
-					},
-					{
-						name: 'Selection',
-						value: 'selection',
 					},
 					{
 						name: 'Token',
@@ -850,7 +1019,7 @@ export class Speckle implements INodeType {
 					{
 						name: 'Get Activity',
 						value: 'getActivity',
-						description: 'Get the activity stream for a project',
+						description: 'List the most recent versions across all models of a project',
 						action: 'Get project activity',
 					},
 					{
@@ -1048,86 +1217,38 @@ export class Speckle implements INodeType {
 					{
 						name: 'Get Many',
 						value: 'getAll',
-						description: 'Get objects from a version',
+						description: 'Get the elements of a version as summary rows, flattened rows, or raw objects (no geometry)',
 						action: 'Get many objects',
-					},
-					{
-						name: 'Query',
-						value: 'query',
-						description: 'Query objects by property',
-						action: 'Query objects',
-					},
-					{
-						name: 'Get Parameters',
-						value: 'getParameters',
-						description: 'Retrieve all parameters of the object (beam, etc.)',
-						action: 'Get object parameters',
 					},
 					{
 						name: 'Filter Objects',
 						value: 'filterObjects',
-						description: 'Return objects that match a property filter',
+						description: 'Return the elements of a version that match a property filter',
 						action: 'Filter objects by property',
 					},
 					{
-						name: 'Fetch Graph',
-						value: 'fetchGraph',
-						description: 'Fetch complete object graph from Speckle',
-						action: 'Fetch object graph',
-					},
-					{
-						name: 'Get Metadata',
-						value: 'getMetadata',
-						description: 'Get object metadata only (no geometry)',
-						action: 'Get object metadata',
-					},
-					{
-						name: 'Flatten',
-						value: 'flatten',
-						description: 'Export a flat list of all objects with simplified properties',
-						action: 'Flatten object tree',
-					},
-					{
-						name: 'Validate IDS',
-						value: 'validateIds',
-						description: 'Validate objects against an IDS file',
-						action: 'Validate objects against IDS',
-					},
-					{
-						name: 'Traverse',
-						value: 'traverse',
-						description: 'Advanced object traversal with filtering',
-						action: 'Traverse object tree',
-					},
-					{
-						name: 'Extract Metadata',
-						value: 'extractMetadata',
-						description: 'Extract flattened metadata table from objects (Revit, Tekla, IFC)',
-						action: 'Extract metadata',
-					},
-					{
-						name: 'Extract IFC Element Table',
+						name: 'Extract Element Table',
 						value: 'extractElementTable',
-						description: 'Extract a flat IFC element table — one row per IFC element with IFC property sets as columns.',
-						action: 'Extract IFC element table',
-					},
-					{
-						name: 'Extract Tekla Element Table',
-						value: 'extractTeklaTable',
-						description: 'Extract all Tekla Structures elements as a flat table with Tekla-specific filters and user properties.',
-						action: 'Extract Tekla element table',
-					},
-					{
-						name: 'Extract Revit Element Table',
-						value: 'extractRevitTable',
-						description: 'Extract all Revit elements as a flat table with category filtering and Revit parameter columns.',
-						action: 'Extract Revit element table',
+						description: 'Extract a flat table with one row per element, with IFC, Revit, or Tekla specific columns',
+						action: 'Extract element table',
 					},
 					{
 						name: 'Generate Model Analytics',
 						value: 'analyzeModel',
 						description: 'Generate chart-ready analytics for a model version, including element counts for beams, floors, columns, walls, and more.',
 						action: 'Generate model analytics',
+					},
+					{
+						name: 'Fetch Graph',
+						value: 'fetchGraph',
+						description: 'Fetch an object by ID together with everything it references, including geometry',
+						action: 'Fetch object graph',
+					},
+					{
+						name: 'Validate IDS',
+						value: 'validateIds',
+						description: 'Validate objects against an IDS file',
+						action: 'Validate objects against IDS',
 					},
 					{
 						name: 'Object Property Validation',
@@ -1177,24 +1298,10 @@ export class Speckle implements INodeType {
 			},
 
 			// Target Model (if creating a version)
-			{
-				displayName: 'Target Model',
-				name: 'objectVersionModelId',
-				type: 'options',
-				typeOptions: {
-					loadOptionsMethod: 'getModels',
-					loadOptionsDependsOn: ['projectId'],
-				},
-				displayOptions: {
-					show: {
-						resource: ['object'],
-						operation: ['create'],
-						createVersion: [true],
-					},
-				},
-				default: '',
-				description: 'The model to create the new version in',
-			},
+			idLocator(
+				'model', 'objectVersionModelId', 'Target Model', 'The model to create the new version in',
+				{ resource: ['object'], operation: ['create'], createVersion: [true] },
+			),
 
 			// Version Message (if creating a version)
 			{
@@ -1366,28 +1473,6 @@ export class Speckle implements INodeType {
 				default: 'getAll',
 			},
 
-			// Selection Operations
-			{
-				displayName: 'Operation',
-				name: 'operation',
-				type: 'options',
-				noDataExpression: true,
-				displayOptions: {
-					show: {
-						resource: ['selection'],
-					},
-				},
-				options: [
-					{
-						name: 'Get Selection',
-						value: 'getSelection',
-						description: 'Select a project, model, and version',
-						action: 'Get selected project components',
-					},
-				],
-				default: 'getSelection',
-			},
-
 			// Viewer Operations
 			{
 				displayName: 'Operation',
@@ -1405,12 +1490,6 @@ export class Speckle implements INodeType {
 						value: 'getEmbedLink',
 						description: 'Get an embeddable link for the Speckle Viewer',
 						action: 'Get viewer embed link',
-					},
-					{
-						name: 'Get HTML Viewer',
-						value: 'getHtmlViewer',
-						description: 'Get an HTML snippet with the Speckle Viewer embedded',
-						action: 'Get HTML viewer',
 					},
 				],
 				default: 'getEmbedLink',
@@ -1444,109 +1523,12 @@ export class Speckle implements INodeType {
 				default: 'create',
 			},
 
-			// Selection: Project ID (Dropdown)
-			{
-				displayName: 'Project',
-				name: 'projectId',
-				type: 'options',
-				required: true,
-				typeOptions: {
-					loadOptionsMethod: 'getProjects',
-				},
-				displayOptions: {
-					show: {
-						resource: ['selection', 'viewer'],
-						operation: ['getSelection', 'getEmbedLink', 'getHtmlViewer'],
-					},
-				},
-				default: '',
-				description: 'Select a Speckle project',
-			},
-			// Selection: Model ID (Dropdown)
-			{
-				displayName: 'Model',
-				name: 'modelId',
-				type: 'options',
-				required: true,
-				typeOptions: {
-					loadOptionsMethod: 'getModels',
-					loadOptionsDependsOn: ['projectId'],
-				},
-				displayOptions: {
-					show: {
-						resource: ['selection', 'viewer'],
-						operation: ['getSelection', 'getEmbedLink', 'getHtmlViewer'],
-					},
-				},
-				default: '',
-				description: 'Select a model from the project',
-			},
-			// Selection: Version ID (Dropdown)
-			{
-				displayName: 'Version',
-				name: 'versionId',
-				type: 'options',
-				required: true,
-				typeOptions: {
-					loadOptionsMethod: 'getVersions',
-					loadOptionsDependsOn: ['modelId'],
-				},
-				displayOptions: {
-					show: {
-						resource: ['selection', 'viewer'],
-						operation: ['getSelection', 'getEmbedLink', 'getHtmlViewer'],
-					},
-				},
-				default: '',
-				description: 'Select a version from the model',
-			},
 
-			// Project ID field
-			{
-				displayName: 'Project ID',
-				name: 'projectId',
-				type: 'string',
-				required: true,
-				displayOptions: {
-					show: {
-						resource: ['project'],
-						operation: ['get', 'importFile', 'downloadFile', 'listBlobs', 'invite', 'remove', 'getActivity', 'getTeam', 'leave', 'updateRole', 'transfer', 'exportPayload'],
-					},
-				},
-				default: '',
-				description: 'The ID of the Speckle project',
-			},
 
-			// Project ID for Webhooks
-			{
-				displayName: 'Project ID',
-				name: 'projectId',
-				type: 'string',
-				required: true,
-				displayOptions: {
-					show: {
-						resource: ['webhook'],
-					},
-				},
-				default: '',
-				description: 'The ID of the Speckle project',
-			},
 
-			// Project ID for models/versions
-			{
-				displayName: 'Project ID',
-				name: 'projectId',
-				type: 'string',
-				required: true,
-					displayOptions: {
-					show: {
-						resource: ['model', 'version', 'object', 'comment', 'viewer'],
-						operation: ['getAll', 'getByName', 'query', 'getParameters', 'filterObjects', 'create', 'update', 'delete', 'fetchGraph', 'getProjectComments', 'reply', 'archive', 'edit', 'markViewed', 'getMetadata', 'get', 'flatten', 'traverse', 'extractMetadata', 'extractElementTable', 'extractTeklaTable', 'extractRevitTable', 'analyzeModel', 'validateProperties', 'diff', 'getEmbedLink', 'getHtmlViewer', 'updateProperties', 'moveToModel', 'markReceived', 'transfer', 'exportPayload'],
-					},
-				},
-				default: '',
-				description: 'The ID of the Speckle project',
-			},
+
+			// Project / Model / Version pickers (list, URL or ID)
+			...SPECKLE_ID_FIELDS,
 
 			// User Email (for Invite)
 			{
@@ -1621,84 +1603,7 @@ export class Speckle implements INodeType {
 				description: 'The new role for the user. Select "Remove Access" to revoke membership.',
 			},
 
-			// Model ID field for Version/Object operations
-			{
-				displayName: 'Model ID',
-				name: 'modelId',
-				type: 'string',
-				required: true,
-				displayOptions: {
-					show: {
-						resource: ['version', 'object', 'viewer'],
-						operation: ['getAll', 'query', 'getParameters', 'filterObjects', 'delete', 'getMetadata', 'flatten', 'traverse', 'extractMetadata', 'extractElementTable', 'extractTeklaTable', 'extractRevitTable', 'analyzeModel', 'diff', 'getEmbedLink', 'getHtmlViewer', 'updateProperties', 'transfer', 'exportPayload'],
-					},
-				},
-				default: '',
-				description: 'The ID of the Speckle model',
-			},
-			// Model ID field for Model operations (only get and delete)
-			{
-				displayName: 'Model ID',
-				name: 'modelId',
-				type: 'string',
-				required: true,
-				displayOptions: {
-					show: {
-						resource: ['model'],
-						operation: ['get', 'delete', 'transfer', 'exportPayload'],
-					},
-				},
-				default: '',
-				description: 'The ID of the Speckle model',
-			},
-			// Model ID for project importFile operation only
-			{
-				displayName: 'Model ID',
-				name: 'modelId',
-				type: 'string',
-				required: true,
-				displayOptions: {
-					show: {
-						resource: ['project'],
-						operation: ['importFile'],
-					},
-				},
-				default: '',
-				description: 'The ID of the Speckle model to import the file into',
-			},
 
-			// Version ID field
-			{
-				displayName: 'Version ID',
-				name: 'versionId',
-				type: 'string',
-				required: true,
-				displayOptions: {
-					show: {
-						resource: ['object', 'viewer'],
-						operation: ['getAll', 'query', 'getParameters', 'filterObjects', 'getMetadata', 'flatten', 'traverse', 'extractMetadata', 'extractElementTable', 'extractTeklaTable', 'extractRevitTable', 'analyzeModel', 'getEmbedLink', 'getHtmlViewer', 'updateProperties'],
-					},
-					hide: {
-						operation: ['fetchGraph', 'validateIds'],
-					},
-				},
-				default: '',
-				description: 'The ID of the version',
-			},
-			{
-				displayName: 'Version ID',
-				name: 'versionId',
-				type: 'string',
-				required: true,
-				displayOptions: {
-					show: {
-						resource: ['version'],
-						operation: ['get', 'update', 'delete', 'transfer', 'exportPayload'],
-					},
-				},
-				default: '',
-				description: 'The ID of the version',
-			},
 			{
 				displayName: 'Message',
 				name: 'versionMessage',
@@ -1711,34 +1616,6 @@ export class Speckle implements INodeType {
 				},
 				default: '',
 				description: 'New message for the version',
-			},
-			{
-				displayName: 'Version A ID (Old)',
-				name: 'versionAId',
-				type: 'string',
-				required: true,
-				displayOptions: {
-					show: {
-						resource: ['version'],
-						operation: ['diff'],
-					},
-				},
-				default: '',
-				description: 'The ID of the older version',
-			},
-			{
-				displayName: 'Version B ID (New)',
-				name: 'versionBId',
-				type: 'string',
-				required: true,
-				displayOptions: {
-					show: {
-						resource: ['version'],
-						operation: ['diff'],
-					},
-				},
-				default: '',
-				description: 'The ID of the newer version',
 			},
 			{
 				displayName: 'Detailed Diff',
@@ -1964,7 +1841,7 @@ export class Speckle implements INodeType {
 			displayOptions: {
 				show: {
 					resource: ['object'],
-					operation: ['query', 'filterObjects'],
+					operation: ['filterObjects'],
 				},
 			},
 			options: [
@@ -2019,7 +1896,7 @@ export class Speckle implements INodeType {
 			displayOptions: {
 				show: {
 					resource: ['object'],
-					operation: ['query', 'filterObjects'],
+					operation: ['filterObjects'],
 					propertyToSearch: ['custom'],
 				},
 			},
@@ -2034,7 +1911,7 @@ export class Speckle implements INodeType {
 			displayOptions: {
 				show: {
 					resource: ['object'],
-					operation: ['query', 'filterObjects'],
+					operation: ['filterObjects'],
 				},
 			},
 			options: [
@@ -2064,7 +1941,7 @@ export class Speckle implements INodeType {
 			displayOptions: {
 				show: {
 					resource: ['object'],
-					operation: ['query', 'filterObjects'],
+					operation: ['filterObjects'],
 					matchType: ['contains', 'equals'],
 				},
 			},
@@ -2072,18 +1949,23 @@ export class Speckle implements INodeType {
 			placeholder: 'e.g., Wall, Concrete, Level 1',
 			description: 'The value to search for in the selected property',
 		},
+
 			{
-				displayName: 'Include Nested Parameters',
-				name: 'includeNested',
-				type: 'boolean',
-				default: false,
+				displayName: 'Output',
+				name: 'filterOutput',
+				type: 'options',
 				displayOptions: {
 					show: {
 						resource: ['object'],
-						operation: ['getParameters'],
+						operation: ['filterObjects'],
 					},
 				},
-				description: 'When enabled, nested objects are also returned in the parameters map.',
+				options: [
+					{ name: 'Matching Objects', value: 'objects', description: 'One item per matching object, with its full metadata' },
+					{ name: 'Match Summary', value: 'summary', description: 'A single item listing the matched IDs, keys and values' },
+				],
+				default: 'objects',
+				description: 'What to return for the matches',
 			},
 
 			// Max nodes to inspect when doing a client-side property query
@@ -2095,47 +1977,32 @@ export class Speckle implements INodeType {
 				displayOptions: {
 					show: {
 						resource: ['object'],
-						operation: ['query', 'filterObjects', 'traverse'],
+						operation: ['filterObjects'],
 					},
 				},
 				description: 'Maximum number of nodes to traverse when searching an object (guards against huge models).',
 			},
 
-			// Traversal Options
-			{
-				displayName: 'Exclude Types',
-				name: 'excludeTypes',
-				type: 'string',
-				typeOptions: {
-					multipleValues: true,
-				},
-				displayOptions: {
-					show: {
-						resource: ['object'],
-						operation: ['traverse'],
-					},
-				},
-				default: [],
-				description: 'List of Speckle types to exclude from traversal (e.g., Objects.Geometry.Mesh)',
-			},
-			{
-				displayName: 'Return Properties',
-				name: 'returnProperties',
-				type: 'string',
-				typeOptions: {
-					multipleValues: true,
-				},
-				displayOptions: {
-					show: {
-						resource: ['object'],
-						operation: ['traverse'],
-					},
-				},
-				default: [],
-				description: 'List of specific properties to return for each visited object. If empty, returns the full object.',
-			},
 
-			// Extract Metadata Options
+			// Get Many (object) options
+			{
+				displayName: 'Output',
+				name: 'elementOutput',
+				type: 'options',
+				displayOptions: {
+					show: {
+						resource: ['object'],
+						operation: ['getAll'],
+					},
+				},
+				options: [
+					{ name: 'Summary', value: 'summary', description: 'Key fields per element plus a single "parameters" object' },
+					{ name: 'Flattened', value: 'flat', description: 'All properties flattened to columns, tuned to the source application' },
+					{ name: 'Raw', value: 'raw', description: 'Objects exactly as stored, including containers. Useful to inspect real property names.' },
+				],
+				default: 'summary',
+				description: 'How each element is shaped in the output. Geometry is never included.',
+			},
 			{
 				displayName: 'Include Geometry Properties',
 				name: 'includeGeometry',
@@ -2144,7 +2011,8 @@ export class Speckle implements INodeType {
 				displayOptions: {
 					show: {
 						resource: ['object'],
-						operation: ['extractMetadata'],
+						operation: ['getAll'],
+						elementOutput: ['flat'],
 					},
 				},
 				description: 'Include basic geometry properties (volume, area, length) in the output',
@@ -2157,7 +2025,8 @@ export class Speckle implements INodeType {
 				displayOptions: {
 					show: {
 						resource: ['object'],
-						operation: ['extractMetadata'],
+						operation: ['getAll'],
+						elementOutput: ['flat'],
 					},
 				},
 				description: 'Flatten all nested properties to top level (e.g., properties.family becomes family)',
@@ -2369,24 +2238,10 @@ export class Speckle implements INodeType {
 			},
 
 			// Target Model (if auto-commit is on)
-			{
-				displayName: 'Target Model',
-				name: 'targetModelId',
-				type: 'options',
-				typeOptions: {
-					loadOptionsMethod: 'getModels',
-					loadOptionsDependsOn: ['projectId'],
-				},
-				displayOptions: {
-					show: {
-						resource: ['object'],
-						operation: ['updateProperties'],
-						autoCommit: [true],
-					},
-				},
-				default: '',
-				description: 'The model to create the new version in',
-			},
+			idLocator(
+				'model', 'targetModelId', 'Target Model', 'The model to create the new version in',
+				{ resource: ['object'], operation: ['updateProperties'], autoCommit: [true] },
+			),
 
 			// Commit Message
 			{
@@ -2416,7 +2271,8 @@ export class Speckle implements INodeType {
 			displayOptions: {
 				show: {
 					resource: ['object'],
-					operation: ['extractMetadata'],
+					operation: ['getAll'],
+					elementOutput: ['flat'],
 				},
 			},
 			description: 'How to prefix property names to avoid conflicts',
@@ -2438,7 +2294,30 @@ export class Speckle implements INodeType {
 			displayOptions: {
 				show: {
 					resource: ['object'],
-					operation: ['extractMetadata', 'extractElementTable', 'analyzeModel'],
+					operation: ['analyzeModel'],
+				},
+			},
+			description: 'Manually specify the source application if auto-detection fails. This helps optimize metadata extraction for application-specific property structures.',
+		},
+		{
+			displayName: 'Application Hint',
+			name: 'applicationHint',
+			type: 'options',
+			options: [
+				{ name: 'Auto-detect', value: 'auto' },
+				{ name: 'Revit', value: 'Revit' },
+				{ name: 'Tekla', value: 'Tekla' },
+				{ name: 'IFC', value: 'IFC' },
+				{ name: 'Rhino', value: 'Rhino' },
+				{ name: 'Archicad', value: 'Archicad' },
+				{ name: 'Generic', value: 'Generic' },
+			],
+			default: 'auto',
+			displayOptions: {
+				show: {
+					resource: ['object'],
+					operation: ['getAll'],
+					elementOutput: ['flat'],
 				},
 			},
 			description: 'Manually specify the source application if auto-detection fails. This helps optimize metadata extraction for application-specific property structures.',
@@ -2448,13 +2327,33 @@ export class Speckle implements INodeType {
 		// EXTRACT ELEMENT TABLE OPTIONS
 		// ============================================
 		{
+			displayName: 'Source Application',
+			name: 'tableSource',
+			type: 'options',
+			displayOptions: {
+				show: {
+					resource: ['object'],
+					operation: ['extractElementTable'],
+				},
+			},
+			options: [
+				{ name: 'Auto-detect', value: 'auto', description: 'Use each element\'s own source application; no elements are skipped' },
+				{ name: 'IFC', value: 'ifc', description: 'Only IFC elements, with IFC property sets as columns' },
+				{ name: 'Revit', value: 'revit', description: 'Only Revit elements, with category filtering and Revit parameter columns' },
+				{ name: 'Tekla', value: 'tekla', description: 'Only Tekla Structures elements, with element-type filtering and user properties' },
+			],
+			default: 'auto',
+			description: 'Which elements to include and which application-specific columns to produce',
+		},
+		{
 			displayName: 'Element Type',
 			name: 'teklaElementTypes',
 			type: 'options',
 			displayOptions: {
 				show: {
 					resource: ['object'],
-					operation: ['extractTeklaTable'],
+					operation: ['extractElementTable'],
+					tableSource: ['tekla'],
 				},
 			},
 			options: [
@@ -2490,7 +2389,8 @@ export class Speckle implements INodeType {
 			displayOptions: {
 				show: {
 					resource: ['object'],
-					operation: ['extractTeklaTable'],
+					operation: ['extractElementTable'],
+					tableSource: ['tekla'],
 				},
 			},
 			default: true,
@@ -2503,7 +2403,7 @@ export class Speckle implements INodeType {
 			displayOptions: {
 				show: {
 					resource: ['object'],
-					operation: ['extractElementTable', 'extractTeklaTable', 'extractRevitTable', 'analyzeModel'],
+					operation: ['getAll', 'extractElementTable', 'analyzeModel'],
 				},
 			},
 			default: 0,
@@ -2520,7 +2420,7 @@ export class Speckle implements INodeType {
 			displayOptions: {
 				show: {
 					resource: ['object'],
-					operation: ['extractElementTable', 'extractTeklaTable', 'extractRevitTable', 'analyzeModel'],
+					operation: ['getAll', 'extractElementTable', 'analyzeModel'],
 				},
 			},
 			default: 500,
@@ -2572,7 +2472,8 @@ export class Speckle implements INodeType {
 			displayOptions: {
 				show: {
 					resource: ['object'],
-					operation: ['extractRevitTable'],
+					operation: ['extractElementTable'],
+					tableSource: ['revit'],
 				},
 			},
 			options: [
@@ -2622,7 +2523,8 @@ export class Speckle implements INodeType {
 			displayOptions: {
 				show: {
 					resource: ['object'],
-					operation: ['extractRevitTable'],
+					operation: ['extractElementTable'],
+					tableSource: ['revit'],
 				},
 			},
 			default: true,
@@ -2635,7 +2537,8 @@ export class Speckle implements INodeType {
 			displayOptions: {
 				show: {
 					resource: ['object'],
-					operation: ['extractRevitTable'],
+					operation: ['extractElementTable'],
+					tableSource: ['revit'],
 				},
 			},
 			default: false,
@@ -2673,6 +2576,7 @@ export class Speckle implements INodeType {
 					},
 					hide: {
 						returnAll: [true],
+						resource: ['webhook', 'object'],
 					},
 				},
 				default: 20,
@@ -2689,7 +2593,7 @@ export class Speckle implements INodeType {
 				displayOptions: {
 					show: {
 						resource: ['project'],
-						operation: ['get', 'getAll'],
+						operation: ['get'],
 					},
 				},
 				options: [
@@ -2775,10 +2679,10 @@ export class Speckle implements INodeType {
 					},
 				},
 				default: '',
-				description: 'Description of the project',
+				description: 'Description of the project. On Update, leave empty to keep the current description.',
 			},
 
-			// Project Visibility (for create/update)
+			// Project Visibility (for create)
 			{
 				displayName: 'Visibility',
 				name: 'visibility',
@@ -2803,11 +2707,48 @@ export class Speckle implements INodeType {
 				displayOptions: {
 					show: {
 						resource: ['project'],
-						operation: ['create', 'update'],
+						operation: ['create'],
 					},
 				},
 				default: 'PRIVATE',
 				description: 'Who can access this project',
+			},
+
+			// Project Visibility (for update)
+			{
+				displayName: 'Visibility',
+				name: 'visibility',
+				type: 'options',
+				options: [
+					{
+						name: 'Keep Current',
+						value: '',
+						description: 'Leave the visibility unchanged',
+					},
+					{
+						name: 'Private',
+						value: 'PRIVATE',
+						description: 'Only team members can access',
+					},
+					{
+						name: 'Public',
+						value: 'PUBLIC',
+						description: 'Anyone can view',
+					},
+					{
+						name: 'Unlisted',
+						value: 'UNLISTED',
+						description: 'Anyone with the link can view',
+					},
+				],
+				displayOptions: {
+					show: {
+						resource: ['project'],
+						operation: ['update'],
+					},
+				},
+				default: '',
+				description: 'Who can access this project. Keep Current leaves it unchanged.',
 			},
 
 			// Project Name (for Get By Name)
@@ -2826,21 +2767,6 @@ export class Speckle implements INodeType {
 				description: 'Exact name of the project to find (case-insensitive)',
 			},
 
-			// Project ID for update/delete
-			{
-				displayName: 'Project ID',
-				name: 'projectIdForUpdate',
-				type: 'string',
-				required: true,
-				displayOptions: {
-					show: {
-						resource: ['project'],
-						operation: ['update', 'delete'],
-					},
-				},
-				default: '',
-				description: 'The ID of the project to update or delete',
-			},
 
 			// Model Name (for create/update)
 			{
@@ -2870,7 +2796,7 @@ export class Speckle implements INodeType {
 					},
 				},
 				default: '',
-				description: 'Description of the model',
+				description: 'Description of the model. On Update, leave empty to keep the current description.',
 			},
 
 			// Model Name (for Get By Name)
@@ -2889,21 +2815,6 @@ export class Speckle implements INodeType {
 				description: 'Exact name of the model to find within the project (case-insensitive)',
 			},
 
-			// Model ID (for update)
-			{
-				displayName: 'Model ID',
-				name: 'modelIdForUpdate',
-				type: 'string',
-				required: true,
-				displayOptions: {
-					show: {
-						resource: ['model'],
-						operation: ['update'],
-					},
-				},
-				default: '',
-				description: 'The ID of the model to update',
-			},
 
 			// Version/Commit Message (for create)
 			{
@@ -2936,21 +2847,6 @@ export class Speckle implements INodeType {
 				description: 'The ID of the object to commit',
 			},
 
-			// Model ID (for version create)
-			{
-				displayName: 'Model ID',
-				name: 'branchName',
-				type: 'string',
-				required: true,
-				displayOptions: {
-					show: {
-						resource: ['version'],
-						operation: ['create'],
-					},
-				},
-				default: '',
-				description: 'ID of the model to create the version in',
-			},
 
 // Comment Text (for create/reply/edit)
 			{
@@ -3062,20 +2958,6 @@ export class Speckle implements INodeType {
 				},
 				default: 'n8n',
 				description: 'The name of the application that received this version',
-			},
-			{
-				displayName: 'Version ID',
-				name: 'versionId',
-				type: 'string',
-				required: true,
-				displayOptions: {
-					show: {
-						resource: ['version'],
-						operation: ['markReceived'],
-					},
-				},
-				default: '',
-				description: 'The ID of the version to mark as received',
 			},
 			{
 				displayName: 'Message',
@@ -3264,121 +3146,90 @@ export class Speckle implements INodeType {
 	};
 
 	methods = {
-		loadOptions: {
-			// Load all projects from Speckle
-			async getProjects(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
+		listSearch: {
+			async searchProjects(this: ILoadOptionsFunctions, filter?: string, paginationToken?: string): Promise<INodeListSearchResult> {
 				const credentials = await this.getCredentials('speckleApi') as SpeckleCredentials;
-
-				try {
-					const response = await this.helpers.request({
-						method: 'POST',
-						url: `${credentials.serverUrl}/graphql`,
-						headers: {
-							'Authorization': `Bearer ${credentials.token}`,
-							'Content-Type': 'application/json',
-						},
-						body: {
-							query: queries.listProjects,
-							variables: { limit: 100 }
-						},
-						json: true,
-					});
-
-					const projects = response.data?.activeUser?.projects?.items || [];
-
-					return projects.map((project: any) => ({
+				const client = new SpeckleClient(this, credentials, false);
+				const data = await client.makeGraphQLRequest(queries.listProjects, {
+					limit: 50,
+					cursor: paginationToken ?? null,
+					filter: filter ? { search: filter } : undefined,
+				});
+				const page = data?.activeUser?.projects;
+				return {
+					results: (page?.items ?? []).map((project: any) => ({
 						name: project.name,
 						value: project.id,
-						description: project.description || undefined,
-					}));
-				} catch (error) {
-					console.error('Failed to load projects:', error);
-					return [];
-				}
+						url: `${credentials.serverUrl}/projects/${project.id}`,
+					})),
+					paginationToken: page?.cursor ?? undefined,
+				};
 			},
 
-			// Load models for a selected project
-			async getModels(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
-				const projectId = this.getNodeParameter('projectId') as string;
-				if (!projectId) return [];
+			async searchModels(this: ILoadOptionsFunctions, filter?: string, paginationToken?: string): Promise<INodeListSearchResult> {
+				const projectId = resolveSpeckleId(this.getNodeParameter('projectId', ''), 'project');
+				if (!projectId) return { results: [] };
 
 				const credentials = await this.getCredentials('speckleApi') as SpeckleCredentials;
-
-				try {
-					const response = await this.helpers.request({
-						method: 'POST',
-						url: `${credentials.serverUrl}/graphql`,
-						headers: {
-							'Authorization': `Bearer ${credentials.token}`,
-							'Content-Type': 'application/json',
-						},
-						body: {
-							query: queries.getProject,
-							variables: {
-								projectId,
-								modelLimit: 100
-							}
-						},
-						json: true,
-					});
-
-					const models = response.data?.project?.models?.items || [];
-
-					return models.map((model: any) => ({
-						name: model.name,
-						value: model.id,
-						description: model.description || undefined,
-					}));
-				} catch (error) {
-					console.error('Failed to load models:', error);
-					return [];
-				}
+				const client = new SpeckleClient(this, credentials, false);
+				const data = await client.makeGraphQLRequest(queries.getModels, {
+					projectId,
+					limit: 100,
+					cursor: paginationToken ?? null,
+				});
+				const page = data?.project?.models;
+				const needle = (filter ?? '').trim().toLowerCase();
+				return {
+					results: (page?.items ?? [])
+						.filter((model: any) => !needle || String(model.name ?? '').toLowerCase().includes(needle))
+						.map((model: any) => ({
+							name: model.name,
+							value: model.id,
+							url: `${credentials.serverUrl}/projects/${projectId}/models/${model.id}`,
+						})),
+					paginationToken: page?.cursor ?? undefined,
+				};
 			},
 
-			// Load versions for a selected model
-			async getVersions(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
-				const projectId = this.getNodeParameter('projectId') as string;
-				const modelId = this.getNodeParameter('modelId') as string;
-				if (!projectId || !modelId) return [];
+			async searchVersions(this: ILoadOptionsFunctions, filter?: string, paginationToken?: string): Promise<INodeListSearchResult> {
+				const projectId = resolveSpeckleId(this.getNodeParameter('projectId', ''), 'project');
+				if (!projectId) return { results: [] };
+				// Model is not shown for every operation that takes a version; fall back to the project's recent versions
+				const modelId = resolveSpeckleId(this.getNodeParameter('modelId', ''), 'model');
 
 				const credentials = await this.getCredentials('speckleApi') as SpeckleCredentials;
-
-				try {
-					const response = await this.helpers.request({
-						method: 'POST',
-						url: `${credentials.serverUrl}/graphql`,
-						headers: {
-							'Authorization': `Bearer ${credentials.token}`,
-							'Content-Type': 'application/json',
-						},
-						body: {
-							query: queries.getModelVersions,
-							variables: {
-								projectId,
-								modelId,
-								limit: 100
-							}
-						},
-						json: true,
+				const client = new SpeckleClient(this, credentials, false);
+				let page: any;
+				if (modelId) {
+					const data = await client.makeGraphQLRequest(queries.getModelVersions, {
+						projectId,
+						modelId,
+						limit: 50,
+						cursor: paginationToken ?? null,
 					});
-
-					const versions = response.data?.project?.model?.versions?.items || [];
-
-					return versions.map((version: any) => ({
-						name: `${version.message || 'Unnamed'} (${new Date(version.createdAt).toLocaleDateString()})`,
-						value: version.id,
-						description: version.sourceApplication || undefined,
-					}));
-				} catch (error) {
-					console.error('Failed to load versions:', error);
-					return [];
+					page = data?.project?.model?.versions;
+				} else {
+					const data = await client.makeGraphQLRequest(queries.projectActivity, { projectId, limit: 50 });
+					page = { items: data?.project?.versions?.items ?? [] };
 				}
-			},
 
+				const needle = (filter ?? '').trim().toLowerCase();
+				return {
+					results: (page?.items ?? [])
+						.map((version: any) => ({
+							name: `${version.message || 'No message'} (${new Date(version.createdAt).toLocaleDateString()}) · ${version.id}`,
+							value: version.id,
+							url: `${credentials.serverUrl}/projects/${projectId}/models/${version.model?.id ?? modelId}@${version.id}`,
+						}))
+						.filter((entry: any) => !needle || entry.name.toLowerCase().includes(needle)),
+					paginationToken: page?.cursor ?? undefined,
+				};
+			},
+		},
+		loadOptions: {
 			// Load property paths for the selected object so updateProperties can use a dropdown
 			async getObjectPropertyPaths(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
-				const rawProjectId = (this.getNodeParameter('projectId') as string) || '';
-				const projectId = cleanSpeckleId(rawProjectId);
+				const projectId = resolveSpeckleId(this.getNodeParameter('projectId', ''), 'project');
 				const objectId = (this.getNodeParameter('objectId') as string) || '';
 
 				if (!projectId || !objectId) {
@@ -3492,60 +3343,18 @@ export class Speckle implements INodeType {
 				const enableDebug = this.getNodeParameter('enableDebug', i, false) as boolean;
 				const client = new SpeckleClient(this, credentials, enableDebug);
 
+				// Reads a Project / Model / Version picker and returns the bare ID
+				const getId = (name: string): string => {
+					const id = resolveSpeckleId(this.getNodeParameter(name, i), ID_PARAMETER_KINDS[name]);
+					if (!id) {
+						throw new SpeckleError(this.getNode(), `A required ${ID_PARAMETER_KINDS[name]} is missing (parameter "${name}"). Pick one from the list or enter its ID or URL.`);
+					}
+					return id;
+				};
+
 				let responseData;
 
 				switch (resource) {
-					case 'selection': {
-						const projectId = this.getNodeParameter('projectId', i) as string;
-						const modelId = this.getNodeParameter('modelId', i) as string;
-						const versionId = this.getNodeParameter('versionId', i) as string;
-
-						// Fetch Project Details
-						const projectResp = await client.makeGraphQLRequest(queries.getProject, { projectId, modelLimit: 0 });
-						const project = projectResp.project;
-
-						// Fetch Model Details
-						const modelResp = await client.makeGraphQLRequest(queries.getModel, { projectId, modelId });
-						const model = modelResp.project?.model;
-
-						// Fetch Version Details (using getVersionObjects query which gets metadata)
-						const versionResp = await client.makeGraphQLRequest(queries.getVersionObjects, { projectId, modelId, versionId });
-						const version = versionResp?.project?.model?.version;
-
-						if (!project || !model || !version) {
-							throw new SpeckleError(this.getNode(), 'Could not retrieve details for the selected resources. They may have been deleted.');
-						}
-
-						responseData = {
-							project: {
-								id: project.id,
-								name: project.name,
-								description: project.description,
-								role: project.role,
-								url: `${credentials.serverUrl}/projects/${projectId}`
-							},
-							model: {
-								id: model.id,
-								name: model.name,
-								description: model.description,
-								url: `${credentials.serverUrl}/projects/${projectId}/models/${modelId}`
-							},
-							version: {
-								id: version.id,
-								message: version.message,
-								createdAt: version.createdAt,
-								referencedObject: version.referencedObject,
-								sourceApplication: version.sourceApplication,
-								url: `${credentials.serverUrl}/projects/${projectId}/models/${modelId}@${versionId}`
-							},
-							// Flat fields for easier access
-							projectId: project.id,
-							modelId: model.id,
-							versionId: version.id,
-							referencedObjectId: version.referencedObject,
-						};
-						break;
-					}
 					case 'project': {
 						if (operation === 'create') {
 							const name = this.getNodeParameter('projectName', i) as string;
@@ -3555,38 +3364,39 @@ export class Speckle implements INodeType {
 							const response = await client.makeGraphQLRequest(mutations.projectCreate, { input });
 							responseData = response.projectMutations.create;
 						} else if (operation === 'update') {
-							const id = this.getNodeParameter('projectIdForUpdate', i) as string;
+							const id = getId('projectId');
 							const name = this.getNodeParameter('projectName', i) as string;
 							const description = this.getNodeParameter('projectDescription', i, '') as string;
-							const visibility = this.getNodeParameter('visibility', i, 'PRIVATE') as string;
-							const update = { id, name, description, visibility };
+							const visibility = this.getNodeParameter('visibility', i, '') as string;
+							// Blank description / "Keep Current" visibility are left out so they are not overwritten
+							const update = { id, name, description: description || undefined, visibility: visibility || undefined };
 							const response = await client.makeGraphQLRequest(mutations.projectUpdate, { update });
 							responseData = response.projectMutations.update;
 						} else if (operation === 'delete') {
-							const projectId = this.getNodeParameter('projectIdForUpdate', i) as string;
+							const projectId = getId('projectId');
 							const response = await client.makeGraphQLRequest(mutations.projectDelete, { projectId });
 							responseData = { success: response.projectMutations.delete, deletedProjectId: projectId };
 						} else if (operation === 'invite') {
-							const projectId = this.getNodeParameter('projectId', i) as string;
+							const projectId = getId('projectId');
 							const email = this.getNodeParameter('userEmail', i) as string;
 							const role = this.getNodeParameter('userRole', i) as string;
 							const response = await client.makeGraphQLRequest(mutations.projectInvite, { projectId, email, role });
 							responseData = response.projectMutations.invites.create;
 						} else if (operation === 'remove') {
-							const projectId = this.getNodeParameter('projectId', i) as string;
+							const projectId = getId('projectId');
 							const userId = this.getNodeParameter('targetUserId', i) as string;
 							const response = await client.makeGraphQLRequest(mutations.projectRemoveUser, { projectId, userId });
-							responseData = { success: true, removed: response.projectMutations.team.remove };
+							responseData = { success: true, removedUserId: userId, project: response.projectMutations.updateRole };
 						} else if (operation === 'getTeam') {
-							const projectId = this.getNodeParameter('projectId', i) as string;
+							const projectId = getId('projectId');
 							const response = await client.makeGraphQLRequest(queries.getProjectTeam, { projectId });
 							responseData = response.project;
 						} else if (operation === 'leave') {
-							const projectId = this.getNodeParameter('projectId', i) as string;
+							const projectId = getId('projectId');
 							const response = await client.makeGraphQLRequest(mutations.projectLeave, { projectId });
 							responseData = { success: response.projectMutations.leave, projectId };
 						} else if (operation === 'updateRole') {
-							const projectId = this.getNodeParameter('projectId', i) as string;
+							const projectId = getId('projectId');
 							const userId = this.getNodeParameter('targetUserId', i) as string;
 							const role = this.getNodeParameter('newRole', i) as string;
 							const response = await client.makeGraphQLRequest(mutations.projectUpdateRole, {
@@ -3596,7 +3406,7 @@ export class Speckle implements INodeType {
 							});
 							responseData = response.projectMutations.updateRole;
 						} else if (operation === 'transfer') {
-							const sourceProjectId = cleanSpeckleId(this.getNodeParameter('projectId', i) as string);
+							const sourceProjectId = getId('projectId');
 							const destinationServerUrl = (this.getNodeParameter('destinationServerUrl', i) as string).trim().replace(/\/+$/, '');
 							const destinationToken = this.getNodeParameter('destinationToken', i) as string;
 							const destinationVisibility = this.getNodeParameter('destinationVisibility', i, 'PRIVATE') as string;
@@ -3671,7 +3481,7 @@ export class Speckle implements INodeType {
 								transferredModels,
 							};
 						} else if (operation === 'exportPayload') {
-							const sourceProjectId = cleanSpeckleId(this.getNodeParameter('projectId', i) as string);
+							const sourceProjectId = getId('projectId');
 							const transferVersionMode = this.getNodeParameter('transferVersionMode', i, 'latest') as TransferVersionMode;
 							const transferPayload = await buildTransferPayload({
 								resourceType: 'project',
@@ -3729,11 +3539,11 @@ export class Speckle implements INodeType {
 								}
 								responseData = found;
 							} else if (operation === 'getActivity') {
-								const projectId = this.getNodeParameter('projectId', i) as string;
+								const projectId = getId('projectId');
 								const response = await client.makeGraphQLRequest(queries.projectActivity, { projectId, limit });
 								responseData = response.project?.versions?.items ?? [];
 							} else if (operation === 'get') {
-								const projectId = this.getNodeParameter('projectId', i) as string;
+								const projectId = getId('projectId');
 								const additionalFields = this.getNodeParameter('additionalFields', i, {}) as { includeModels?: boolean };
 								const modelLimit = additionalFields.includeModels !== false ? 20 : 0;
 								const response = await client.makeGraphQLRequest(queries.getProject, { projectId, modelLimit });
@@ -3741,13 +3551,13 @@ export class Speckle implements INodeType {
 							} else if (operation === 'search') {
 								const searchQuery = this.getNodeParameter('query', i) as string;
 								const response = await client.makeGraphQLRequest(queries.listProjects, {
-									limit: 50,
+									limit,
 									filter: { search: searchQuery },
 								});
 								responseData = response.activeUser.projects.items;
 							} else if (operation === 'importFile') {
-								const projectId = this.getNodeParameter('projectId', i) as string;
-								const modelId = this.getNodeParameter('modelId', i) as string;
+								const projectId = getId('projectId');
+								const modelId = getId('modelId');
 								const binaryPropertyName = this.getNodeParameter('binaryPropertyName', i) as string;
 								const items = this.getInputData();
 								const binaryDataContainer = items[i].binary;
@@ -3800,7 +3610,7 @@ export class Speckle implements INodeType {
 									message: 'File uploaded and import started'
 								};
 							} else if (operation === 'downloadFile') {
-								const projectId = this.getNodeParameter('projectId', i) as string;
+								const projectId = getId('projectId');
 								const blobId = this.getNodeParameter('blobId', i) as string;
 
 								const baseUrl = credentials.serverUrl.replace(/\/$/, '');
@@ -3882,7 +3692,7 @@ export class Speckle implements INodeType {
 								responseData = [];
 
 							} else if (operation === 'listBlobs') {
-								const projectId = this.getNodeParameter('projectId', i) as string;
+								const projectId = getId('projectId');
 								const limit = this.getNodeParameter('limit', i, 20) as number;
 								const response = await client.makeGraphQLRequest(queries.projectBlobs, { projectId, limit });
 								responseData = response.project.blobs.items;
@@ -3892,7 +3702,7 @@ export class Speckle implements INodeType {
 					}
 					case 'webhook': {
 						if (operation === 'create') {
-							const projectId = this.getNodeParameter('projectId', i) as string;
+							const projectId = getId('projectId');
 							const url = this.getNodeParameter('webhookUrl', i) as string;
 							const description = this.getNodeParameter('webhookDescription', i, '') as string;
 							const triggers = this.getNodeParameter('webhookTriggers', i) as string[];
@@ -3905,7 +3715,7 @@ export class Speckle implements INodeType {
 							});
 							responseData = { webhookId: response.webhookCreate };
 						} else if (operation === 'update') {
-							const projectId = this.getNodeParameter('projectId', i) as string;
+							const projectId = getId('projectId');
 							const webhookId = this.getNodeParameter('webhookId', i) as string;
 							const url = this.getNodeParameter('webhookUrl', i, '') as string;
 							const description = this.getNodeParameter('webhookDescription', i, '') as string;
@@ -3922,7 +3732,7 @@ export class Speckle implements INodeType {
 							});
 							responseData = { success: response.webhookUpdate, webhookId };
 						} else if (operation === 'delete') {
-							const projectId = this.getNodeParameter('projectId', i) as string;
+							const projectId = getId('projectId');
 							const webhookId = this.getNodeParameter('webhookId', i) as string;
 
 							const response = await client.makeGraphQLRequest(mutations.webhookDelete, {
@@ -3931,7 +3741,7 @@ export class Speckle implements INodeType {
 							});
 							responseData = { success: response.webhookDelete, webhookId };
 						} else if (operation === 'get') {
-							const projectId = this.getNodeParameter('projectId', i) as string;
+							const projectId = getId('projectId');
 							const webhookId = this.getNodeParameter('webhookId', i) as string;
 							const response = await client.makeGraphQLRequest(queries.projectWebhook, {
 								projectId,
@@ -3939,13 +3749,13 @@ export class Speckle implements INodeType {
 							});
 							responseData = response.project.webhooks.items[0] ?? null;
 						} else if (operation === 'getAll') {
-							const projectId = this.getNodeParameter('projectId', i) as string;
+							const projectId = getId('projectId');
 							const response = await client.makeGraphQLRequest(queries.projectWebhooks, {
 								projectId
 							});
 							responseData = response.project.webhooks.items;
 						} else if (operation === 'test') {
-							const projectId = this.getNodeParameter('projectId', i) as string;
+							const projectId = getId('projectId');
 							const webhookId = this.getNodeParameter('webhookId', i) as string;
 
 							const webhookResp = await client.makeGraphQLRequest(queries.projectWebhook, {
@@ -3996,79 +3806,20 @@ export class Speckle implements INodeType {
 						break;
 					}
 					case 'viewer': {
-						const projectId = this.getNodeParameter('projectId', i) as string;
-						const modelId = this.getNodeParameter('modelId', i, '') as string;
-						const versionId = this.getNodeParameter('versionId', i, '') as string;
+						const projectId = getId('projectId');
+						const modelId = getId('modelId');
+						const versionId = getId('versionId');
+						const embedUrl = `${credentials.serverUrl}/projects/${projectId}/models/${modelId}@${versionId}#embed=true`;
 
-						let embedUrl = `${credentials.serverUrl}/projects/${projectId}`;
-						if (modelId) {
-							embedUrl += `/models/${modelId}`;
-							if (versionId) {
-								embedUrl += `@${versionId}`;
-							}
-						}
-						embedUrl += '#embed=true';
-
-						if (operation === 'getEmbedLink') {
-							responseData = {
-								url: embedUrl,
-								iframe: `<iframe src="${embedUrl}" width="100%" height="600" frameborder="0" allowfullscreen></iframe>`,
-							};
-						} else if (operation === 'getHtmlViewer') {
-							const html = `
-<!DOCTYPE html>
-<html>
-<head>
-	<meta charset="utf-8">
-	<title>Speckle 3D Viewer</title>
-	<style>
-		body, html { margin: 0; padding: 0; height: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f0f2f5; }
-		.viewer-container { width: 100%; height: 100vh; display: flex; flex-direction: column; }
-		iframe { flex-grow: 1; border: none; width: 100%; height: 100%; }
-		.header { 
-			background: rgba(255, 255, 255, 0.8); 
-			backdrop-filter: blur(10px);
-			padding: 12px 24px; 
-			display: flex; 
-			align-items: center; 
-			justify-content: space-between; 
-			box-shadow: 0 1px 3px rgba(0,0,0,0.05); 
-			z-index: 10;
-			border-bottom: 1px solid rgba(0,0,0,0.05);
-		}
-		.logo-section { display: flex; align-items: center; gap: 12px; }
-		.logo { width: 24px; height: 24px; }
-		.title { font-weight: 600; color: #1e293b; font-size: 14px; letter-spacing: -0.01em; }
-		.info { font-size: 11px; color: #64748b; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
-		.badge { background: #e2e8f0; padding: 2px 6px; border-radius: 4px; margin-left: 4px; }
-	</style>
-</head>
-<body>
-	<div class="viewer-container">
-		<div class="header">
-			<div class="logo-section">
-				<img src="https://speckle.systems/favicons/favicon-32x32.png" class="logo" />
-				<span class="title">Speckle 3D Viewer</span>
-			</div>
-			<div class="info">
-				PROJECT<span class="badge">${projectId}</span>
-				${modelId ? ` | MODEL<span class="badge">${modelId}</span>` : ''}
-				${versionId ? ` | VERSION<span class="badge">${versionId}</span>` : ''}
-			</div>
-		</div>
-		<iframe src="${embedUrl}" allowfullscreen allow="xr-spatial-tracking"></iframe>
-	</div>
-</body>
-</html>`;
-							responseData = {
-								html,
-								url: embedUrl,
-							};
-						}
+						responseData = {
+							url: embedUrl,
+							iframe: `<iframe src="${embedUrl}" width="100%" height="600" frameborder="0" allowfullscreen></iframe>`,
+						};
 						break;
 					}
 					case 'model': {
-						const projectId = this.getNodeParameter('projectId', i) as string;
+						// importPayload targets the destination project fields instead, so Project ID is not shown for it
+						const projectId = operation === 'importPayload' ? '' : getId('projectId');
 
 						if (operation === 'create') {
 							const name = this.getNodeParameter('modelName', i) as string;
@@ -4076,17 +3827,17 @@ export class Speckle implements INodeType {
 							const response = await client.makeGraphQLRequest(mutations.modelCreate, { projectId, name, description });
 							responseData = response.modelMutations.create;
 						} else if (operation === 'update') {
-							const modelId = this.getNodeParameter('modelIdForUpdate', i) as string;
+							const modelId = getId('modelId');
 							const name = this.getNodeParameter('modelName', i) as string;
 							const description = this.getNodeParameter('modelDescription', i, '') as string;
-							const response = await client.makeGraphQLRequest(mutations.modelUpdate, { id: modelId, projectId, name, description });
+							const response = await client.makeGraphQLRequest(mutations.modelUpdate, { id: modelId, projectId, name, description: description || undefined });
 							responseData = response.modelMutations.update;
 						} else if (operation === 'delete') {
-							const modelId = this.getNodeParameter('modelId', i) as string;
+							const modelId = getId('modelId');
 							const response = await client.makeGraphQLRequest(mutations.modelDelete, { id: modelId, projectId });
 							responseData = { success: response.modelMutations.delete, deletedModelId: modelId };
 						} else if (operation === 'get') {
-							const modelId = this.getNodeParameter('modelId', i) as string;
+							const modelId = getId('modelId');
 							const response = await client.makeGraphQLRequest(queries.getModel, { projectId, modelId });
 							responseData = response.project?.model;
 						} else if (operation === 'getAll') {
@@ -4106,7 +3857,7 @@ export class Speckle implements INodeType {
 							}
 							responseData = found;
 						} else if (operation === 'transfer') {
-							const modelId = cleanSpeckleId(this.getNodeParameter('modelId', i) as string);
+							const modelId = getId('modelId');
 							const destinationServerUrl = (this.getNodeParameter('destinationServerUrl', i) as string).trim().replace(/\/+$/, '');
 							const destinationToken = this.getNodeParameter('destinationToken', i) as string;
 							const destinationVisibility = this.getNodeParameter('destinationVisibility', i, 'PRIVATE') as string;
@@ -4172,7 +3923,7 @@ export class Speckle implements INodeType {
 								transferredVersions,
 							};
 						} else if (operation === 'exportPayload') {
-							const modelId = cleanSpeckleId(this.getNodeParameter('modelId', i) as string);
+							const modelId = getId('modelId');
 							const transferVersionMode = this.getNodeParameter('transferVersionMode', i, 'latest') as TransferVersionMode;
 							const transferPayload = await buildTransferPayload({
 								resourceType: 'model',
@@ -4212,17 +3963,18 @@ export class Speckle implements INodeType {
 					}
 					case 'version': {
 						// Sanitize Project ID (in case user pasted a URL)
-						const rawProjectId = this.getNodeParameter('projectId', i) as string;
+						// importPayload targets the destination project fields instead, so Project ID is not shown for it
+						const rawProjectId = operation === 'importPayload' ? '' : getId('projectId');
 						const projectId = cleanSpeckleId(rawProjectId);
 
 						if (operation === 'create') {
-							const modelId = this.getNodeParameter('branchName', i) as string;
+							const modelId = getId('modelId');
 							const objectId = this.getNodeParameter('objectId', i) as string;
 							const message = this.getNodeParameter('versionMessage', i, '') as string;
 							const response = await client.makeGraphQLRequest(mutations.versionCreate, { projectId, modelId, objectId, message });
 							responseData = response.versionMutations.create;
 						} else if (operation === 'getAll') {
-							const modelId = this.getNodeParameter('modelId', i) as string;
+							const modelId = getId('modelId');
 							const returnAll = this.getNodeParameter('returnAll', i, false) as boolean;
 							if (returnAll) {
 								responseData = await listModelVersions(client, projectId, modelId, 'all');
@@ -4236,26 +3988,26 @@ export class Speckle implements INodeType {
 								responseData = response.project.model.versions.items;
 							}
 						} else if (operation === 'update') {
-							const versionId = this.getNodeParameter('versionId', i) as string;
+							const versionId = getId('versionId');
 							const message = this.getNodeParameter('versionMessage', i, '') as string;
 							const response = await client.makeGraphQLRequest(mutations.versionUpdate, { projectId, versionId, message });
 							responseData = response.versionMutations.update;
 						} else if (operation === 'delete') {
-							const versionId = this.getNodeParameter('versionId', i) as string;
+							const versionId = getId('versionId');
 							const response = await client.makeGraphQLRequest(mutations.versionDelete, { projectId, versionIds: [versionId] });
 							responseData = { success: response.versionMutations.delete, deletedVersionId: versionId };
 						} else if (operation === 'get') {
-							const modelId = this.getNodeParameter('modelId', i) as string;
-							const versionId = this.getNodeParameter('versionId', i) as string;
+							const modelId = getId('modelId');
+							const versionId = getId('versionId');
 							// Using getVersionObjects which returns version metadata + referenced object ID
 							const response = await client.makeGraphQLRequest(queries.getVersionObjects, { projectId, modelId, versionId });
 							responseData = response.project?.model?.version;
 						} else if (operation === 'diff') {
-							const rawModelId = this.getNodeParameter('modelId', i) as string;
+							const rawModelId = getId('modelId');
 							const modelId = cleanSpeckleId(rawModelId);
-							const rawVersionAId = this.getNodeParameter('versionAId', i) as string;
+							const rawVersionAId = getId('versionAId');
 							const versionAId = cleanSpeckleId(rawVersionAId);
-							const rawVersionBId = this.getNodeParameter('versionBId', i) as string;
+							const rawVersionBId = getId('versionBId');
 							const versionBId = cleanSpeckleId(rawVersionBId);
 
 							try {
@@ -4295,7 +4047,7 @@ export class Speckle implements INodeType {
 							});
 							responseData = response.versionMutations.moveToModel;
 						} else if (operation === 'markReceived') {
-							const versionId = this.getNodeParameter('versionId', i) as string;
+							const versionId = getId('versionId');
 							const sourceApplication = this.getNodeParameter('sourceApplication', i) as string;
 							const message = this.getNodeParameter('receivedMessage', i, '') as string;
 							const response = await client.makeGraphQLRequest(mutations.versionMarkReceived, {
@@ -4306,8 +4058,8 @@ export class Speckle implements INodeType {
 							});
 							responseData = { success: response.versionMutations.markReceived, versionId, sourceApplication };
 						} else if (operation === 'transfer') {
-							const modelId = cleanSpeckleId(this.getNodeParameter('modelId', i) as string);
-							const versionId = cleanSpeckleId(this.getNodeParameter('versionId', i) as string);
+							const modelId = getId('modelId');
+							const versionId = getId('versionId');
 							const destinationServerUrl = (this.getNodeParameter('destinationServerUrl', i) as string).trim().replace(/\/+$/, '');
 							const destinationToken = this.getNodeParameter('destinationToken', i) as string;
 							const destinationVisibility = this.getNodeParameter('destinationVisibility', i, 'PRIVATE') as string;
@@ -4367,8 +4119,8 @@ export class Speckle implements INodeType {
 								...transferResult,
 							};
 						} else if (operation === 'exportPayload') {
-							const modelId = cleanSpeckleId(this.getNodeParameter('modelId', i) as string);
-							const versionId = cleanSpeckleId(this.getNodeParameter('versionId', i) as string);
+							const modelId = getId('modelId');
+							const versionId = getId('versionId');
 							const transferPayload = await buildTransferPayload({
 								resourceType: 'version',
 								sourceClient: client,
@@ -4406,15 +4158,11 @@ export class Speckle implements INodeType {
 						break;
 					}
 					case 'object': {
-						// validateIds and validateProperties operate directly on the target object/input and don't need model/version context
-						const rawProjectId = operation !== 'validateIds' ? this.getNodeParameter('projectId', i) as string : '';
-						const projectId = cleanSpeckleId(rawProjectId);
-						// modelId is required for most operations except fetchGraph, validateIds, and validateProperties
-						const modelId = !['create', 'fetchGraph', 'validateIds', 'validateProperties'].includes(operation) ? this.getNodeParameter('modelId', i) as string : '';
-						// versionId is required for operations that query version data or need root reconstruction
-						const versionId = ['getAll', 'query', 'getParameters', 'filterObjects', 'getMetadata', 'flatten', 'extractMetadata', 'extractElementTable', 'extractTeklaTable', 'extractRevitTable', 'analyzeModel', 'traverse', 'updateProperties'].includes(operation)
-							? this.getNodeParameter('versionId', i) as string
-							: '';
+						// validateIds works on the input items only; create / fetchGraph / validateProperties address an object directly
+						const projectId = operation !== 'validateIds' ? getId('projectId') : '';
+						const needsVersion = OBJECT_VERSION_OPERATIONS.includes(operation);
+						const modelId = needsVersion ? getId('modelId') : '';
+						const versionId = needsVersion ? getId('versionId') : '';
 
 						if (operation === 'create') {
 							const rawObjectData = this.getNodeParameter('objectData', i) as any;
@@ -4455,10 +4203,7 @@ export class Speckle implements INodeType {
 
 							const createVersion = this.getNodeParameter('createVersion', i, false) as boolean;
 							if (createVersion) {
-								const versionModelId = this.getNodeParameter('objectVersionModelId', i, '') as string;
-								if (!versionModelId) {
-									throw new SpeckleError(this.getNode(), '"Also Create Version" requires a Target Model.');
-								}
+								const versionModelId = getId('objectVersionModelId');
 								const message = this.getNodeParameter('objectVersionMessage', i, '') as string;
 								const versionResponse = await client.makeGraphQLRequest(mutations.versionCreate, {
 									projectId,
@@ -4470,10 +4215,57 @@ export class Speckle implements INodeType {
 							}
 
 							responseData = createResult;
-						} else if (operation === 'query' || operation === 'filterObjects') {
+						} else if (operation === 'getAll') {
+							const elementOutput = this.getNodeParameter('elementOutput', i, 'summary') as string;
+							const maxElements = this.getNodeParameter('maxElements', i, 0) as number;
+							const batchSize = this.getNodeParameter('batchSize', i, 500) as number;
+
+							const versionResp = await client.makeGraphQLRequest(queries.getVersionObjects, { projectId, modelId, versionId });
+							const referencedObjectId = versionResp?.project?.model?.version?.referencedObject;
+							const detectedSourceApplication = versionResp?.project?.model?.version?.sourceApplication;
+							if (!referencedObjectId) {
+								throw new SpeckleError(this.getNode(), 'Referenced object not found for the provided version');
+							}
+
+							// Flattened-output options (ignored by the other output shapes)
+							const includeGeometry = this.getNodeParameter('includeGeometry', i, false) as boolean;
+							const flattenNested = this.getNodeParameter('flattenNested', i, true) as boolean;
+							const propertyPrefix = this.getNodeParameter('propertyPrefix', i, 'none') as string;
+							const applicationHint = this.getNodeParameter('applicationHint', i, 'auto') as string;
+							const sourceApplication = applicationHint !== 'auto' ? applicationHint : detectedSourceApplication;
+
+							const rows: any[] = [];
+							let cursor: string | null = null;
+							let limitReached = false;
+
+							do {
+								const page = await client.getObjectMetadata(projectId, referencedObjectId, batchSize, cursor);
+								cursor = page.cursor;
+
+								for (const obj of page.objects ?? []) {
+									if (elementOutput === 'raw') {
+										rows.push(obj);
+									} else if (!isRealBIMElement(obj)) {
+										continue;
+									} else if (elementOutput === 'flat') {
+										rows.push(extractMetadataFromObject(obj, sourceApplication, includeGeometry, flattenNested, propertyPrefix));
+									} else {
+										rows.push(summariseElement(obj, detectedSourceApplication));
+									}
+
+									if (maxElements > 0 && rows.length >= maxElements) {
+										limitReached = true;
+										break;
+									}
+								}
+							} while (cursor && !limitReached);
+
+							responseData = rows;
+						} else if (operation === 'filterObjects') {
 				// Build propertyQuery from user-friendly parameters
 				const propertyToSearch = this.getNodeParameter('propertyToSearch', i) as string;
 				const matchType = this.getNodeParameter('matchType', i) as string;
+				const filterOutput = this.getNodeParameter('filterOutput', i, 'objects') as string;
 				const maxNodesToInspect = this.getNodeParameter('maxNodesToInspect', i, 1000) as number;
 
 				// Determine the actual property name
@@ -4638,7 +4430,7 @@ export class Speckle implements INodeType {
 
 							console.log(`[${operation}] Searched ${allObjects.length} objects, found ${matches.length} matches`);
 
-							if (operation === 'query') {
+							if (filterOutput === 'summary') {
 								responseData = {
 									versionId,
 									referencedObjectId,
@@ -4651,9 +4443,9 @@ export class Speckle implements INodeType {
 										speckleType: m.object.speckleType || m.object.speckle_type,
 										category: m.object.category
 									})),
-									note: `Searched ${allObjects.length} objects from version metadata. Use Filter Objects operation to get full object data.`,
+									note: `Searched ${allObjects.length} objects from version metadata. Set Output to Matching Objects to get full object data.`,
 								};
-							} else if (operation === 'filterObjects') {
+							} else {
 								// Return full matched objects
 								responseData = matches.map(match => match.object);
 								console.log(`[filterObjects] Returning ${responseData.length} objects`);
@@ -5034,7 +4826,7 @@ export class Speckle implements INodeType {
 							};
 
 							if (autoCommit) {
-								const targetModelId = this.getNodeParameter("targetModelId", i) as string;
+								const targetModelId = getId('targetModelId');
 								const message = this.getNodeParameter("commitMessage", i, "Updated properties via n8n") as string;
 								const debugSteps: any[] = [];
 
@@ -5125,10 +4917,10 @@ export class Speckle implements INodeType {
 								// ── Find path root → … → element ──────────────────────────────────────
 								const objectPath = await findPath(rootObjectId, objectId);
 								debugSteps.push({ step: "pathResult", found: !!objectPath, pathLength: objectPath?.length ?? 0, pathIds: objectPath?.map(p => p.id) ?? [] });
-								updateResult._debug = debugSteps;
+								if (enableDebug) updateResult._debug = debugSteps;
 
 								if (!objectPath) {
-									throw new SpeckleError(this.getNode(), 'Object ' + objectId + ' was not found in the version tree. Check _debug in output.');
+									throw new SpeckleError(this.getNode(), 'Object ' + objectId + ' was not found in the version tree of the given Version ID.');
 								}
 
 								// ── Patch bottom-up, re-hashing each level ─────────────────────────────
@@ -5220,77 +5012,10 @@ export class Speckle implements INodeType {
 								if (sourceApplicationResult.warning) {
 									updateResult.sourceApplicationWarning = sourceApplicationResult.warning;
 								}
-								updateResult._debug = debugSteps;
+								if (enableDebug) updateResult._debug = debugSteps;
 							}
 
 							responseData = updateResult;
-						} else if (operation === 'getParameters') {
-							const includeNested = this.getNodeParameter('includeNested', i, false) as boolean;
-							// 1) Get referenced object id from version
-							const versionResp = await client.makeGraphQLRequest(queries.getVersionObjects, { projectId, modelId, versionId });
-							const referencedObjectId = versionResp?.project?.model?.version?.referencedObject;
-							if (!referencedObjectId) {
-								throw new SpeckleError(this.getNode(), 'Referenced object not found for the provided version');
-							}
-							// 2) Fetch the raw object JSON
-							const streamId = projectId;
-							const rootObject = await client.fetchObject(streamId, referencedObjectId);
-							// 3) Return parameters
-							if (includeNested) {
-								responseData = { parameters: rootObject };
-							} else {
-								// Return only top-level properties (shallow copy)
-								const shallow: any = {};
-								for (const [k, v] of Object.entries(rootObject)) {
-									shallow[k] = v;
-								}
-								responseData = { parameters: shallow };
-							}
-						} else if (operation === 'extractMetadata') {
-						const includeGeometry = this.getNodeParameter('includeGeometry', i, false) as boolean;
-						const flattenNested = this.getNodeParameter('flattenNested', i, true) as boolean;
-						const propertyPrefix = this.getNodeParameter('propertyPrefix', i, 'none') as string;
-						const applicationHint = this.getNodeParameter('applicationHint', i, 'auto') as string;
-
-						// 1) Get version and referenced object ID
-						const versionResp = await client.makeGraphQLRequest(queries.getVersionObjects, { projectId, modelId, versionId });
-						const referencedObjectId = versionResp?.project?.model?.version?.referencedObject;
-						const detectedSourceApplication = versionResp?.project?.model?.version?.sourceApplication;
-
-						if (!referencedObjectId) {
-							throw new SpeckleError(this.getNode(), 'Referenced object not found for the provided version');
-						}
-
-						// Determine which source application to use
-						// If user specified a hint (not 'auto'), use it; otherwise use auto-detected value
-						const sourceApplication = applicationHint !== 'auto' ? applicationHint : detectedSourceApplication;
-
-						// 2) Fetch ALL object metadata
-						const allObjects: any[] = [];
-						let cursor: string | null = null;
-						const pageSize = 500;
-
-						do {
-							const result = await client.getObjectMetadata(projectId, referencedObjectId, pageSize, cursor);
-							if (result.objects && result.objects.length > 0) {
-								allObjects.push(...result.objects);
-							}
-							cursor = result.cursor;
-						} while (cursor);
-
-						// 3) Filter to keep only real BIM elements (exclude DataChunk, Collection, etc.)
-						const realElements = allObjects.filter(obj => isRealBIMElement(obj));
-
-						// 4) Extract and flatten metadata based on source application
-						const extractedData = realElements.map(obj => extractMetadataFromObject(
-							obj,
-							sourceApplication,
-							includeGeometry,
-							flattenNested,
-							propertyPrefix
-						));
-
-						responseData = extractedData;
 						} else if (operation === 'analyzeModel') {
 						const applicationHint = this.getNodeParameter('applicationHint', i, 'auto') as string;
 						const maxElements = this.getNodeParameter('maxElements', i, 0) as number;
@@ -5438,8 +5163,8 @@ export class Speckle implements INodeType {
 								...(analyticsOutputFormat === 'both' ? { metabaseRows } : {}),
 							};
 						}
-						} else if (['extractElementTable', 'extractTeklaTable', 'extractRevitTable'].includes(operation)) {
-						const applicationHint = this.getNodeParameter('applicationHint', i, 'auto') as string;
+						} else if (operation === 'extractElementTable') {
+						const tableSource = this.getNodeParameter('tableSource', i, 'auto') as string;
 						const elementTypeFilter = this.getNodeParameter('teklaElementTypes', i, 'all') as string;
 						const includeUserProperties = this.getNodeParameter('includeUserProperties', i, true) as boolean;
 						const categoryFilter = this.getNodeParameter('revitCategory', i, 'all') as string;
@@ -5490,13 +5215,9 @@ export class Speckle implements INodeType {
 							throw new SpeckleError(this.getNode(), 'Referenced object not found for the provided version');
 						}
 
-						const sourceApplication = operation === 'extractTeklaTable'
-							? 'Tekla'
-							: operation === 'extractRevitTable'
-								? 'Revit'
-								: applicationHint !== 'auto'
-									? applicationHint
-									: detectedSourceApplication;
+						// A chosen source application overrides whatever the version reports
+						const forcedSource: Record<string, string> = { ifc: 'IFC', revit: 'Revit', tekla: 'Tekla' };
+						const sourceApplication = forcedSource[tableSource] ?? detectedSourceApplication;
 
 						let totalFetched = 0;
 						let cursorTable: string | null = null;
@@ -5512,13 +5233,7 @@ export class Speckle implements INodeType {
 								}
 
 								const sourceApplicationId = detectSourceApplicationId(obj, sourceApplication);
-								if (operation === 'extractElementTable' && sourceApplicationId !== 'ifc') {
-									continue;
-								}
-								if (operation === 'extractTeklaTable' && sourceApplicationId !== 'tekla') {
-									continue;
-								}
-								if (operation === 'extractRevitTable' && sourceApplicationId !== 'revit') {
+								if (tableSource !== 'auto' && sourceApplicationId !== tableSource) {
 									continue;
 								}
 
@@ -5568,88 +5283,8 @@ export class Speckle implements INodeType {
 
 						// Rows pushed directly — skip normal responseData assignment
 						responseData = [];
-						} else if (operation === 'getAll') {
-							// Fetch objects using REST API (v2.18 compatible)
-							const limit = this.getNodeParameter('limit', i, 100) as number;
-
-							// 1) Get version and referenced object ID via GraphQL (more reliable than REST for metadata)
-							const versionResp = await client.makeGraphQLRequest(queries.getVersionObjects, { projectId, modelId, versionId });
-							const referencedObjectId = versionResp?.project?.model?.version?.referencedObject;
-							if (!referencedObjectId) {
-								throw new SpeckleError(this.getNode(), 'Referenced object not found for the provided version');
-							}
-
-							// 2) Fetch objects using REST traversal
-							// This replaces the GraphQL cursor-based pagination which is unreliable on some server versions
-							const rawObjects = await client.getObjectChildrenRest(projectId, referencedObjectId, limit);
-
-							const objects: any[] = [];
-							let fetchedCount = 0;
-
-							for (const obj of rawObjects) {
-								if (fetchedCount >= limit) break;
-
-								// Filtering is now done during traversal in client.ts
-								const data = obj.data;
-								if (!data) continue;
-
-								// Build element type key (IFC > Revit > Profile > Speckle type)
-								const elementType =
-									data.properties?.ifcType ||
-									(data.properties?.family && data.properties?.type
-										? `${data.properties.family}:${data.properties.type}`
-										: null) ||
-									data.properties?.profile ||
-									data.speckleType ||
-									data.speckle_type ||
-									'Unknown';
-
-								// Flatten Report attributes (extract .value)
-								const reportProps: Record<string, any> = {};
-								if (data.properties?.Report) {
-									for (const key in data.properties.Report) {
-										const val = data.properties.Report[key];
-										// If it's an object with a 'value' property (Tekla style), extract it
-										if (val && typeof val === 'object' && 'value' in val) {
-											reportProps[key] = val.value;
-										} else {
-											reportProps[key] = val;
-										}
-									}
-								}
-
-								// Flatten parameters (merge parameters and userDefinedAttributes for Tekla)
-								const parameters = {
-									...data.parameters,
-									...data.properties?.parameters,
-									...data.properties?.userDefinedAttributes,
-									...reportProps,
-								};
-
-								objects.push({
-									id: data.id,
-									speckleType: data.speckleType || data.speckle_type,
-									elementType: elementType,
-									category: data.category,
-									family: data.properties?.family,
-									type: data.properties?.type,
-									ifcType: data.properties?.ifcType,
-									profile: data.properties?.profile,
-									material: data.properties?.material,
-									parameters: parameters,
-								});
-
-								fetchedCount++;
-							}
-
-							// Return objects
-							responseData = objects;
-
-
-
-
 						} else if (operation === 'fetchGraph') {
-							const streamId = this.getNodeParameter('projectId', i) as string;
+							const streamId = getId('projectId');
 							const objectId = this.getNodeParameter('objectId', i) as string;
 							const options = this.getNodeParameter('fetchGraphOptions', i, {}) as {
 								maxDepth?: number;
@@ -5663,165 +5298,6 @@ export class Speckle implements INodeType {
 								objectId,
 								options
 							);
-						} else if (operation === 'getMetadata') {
-							// 1) Get version and referenced object ID
-							const versionResp = await client.makeGraphQLRequest(queries.getVersionObjects, { projectId, modelId, versionId });
-							const referencedObjectId = versionResp?.project?.model?.version?.referencedObject;
-							const sourceApplication = versionResp?.project?.model?.version?.sourceApplication;
-
-							if (!referencedObjectId) {
-								throw new SpeckleError(this.getNode(), 'Referenced object not found for the provided version');
-							}
-
-							// 2) Fetch metadata with cursor-based pagination
-							// We fetch ALL objects by default (since Limit is not exposed for this op).
-							// We use a decent page size (limit) to be efficient.
-
-							const allObjects: any[] = [];
-							let cursor: string | null = null;
-							const pageSize = 500;
-
-							do {
-								const result = await client.getObjectMetadata(
-									projectId,
-									referencedObjectId,
-									pageSize,
-									cursor
-								);
-
-								if (result.objects && result.objects.length > 0) {
-									allObjects.push(...result.objects);
-								}
-
-								cursor = result.cursor;
-
-							} while (cursor);
-
-							// Post-process objects to flatten properties (Tekla Report, Revit Parameters, etc.)
-							// This matches the logic in 'getAll' to ensure consistency.
-							const processedObjects = allObjects.map((data: any) => {
-
-								// Build element type key (IFC > Revit > Profile > Speckle type)
-								const elementType =
-									data.properties?.ifcType ||
-									(data.properties?.family && data.properties?.type
-										? `${data.properties.family}:${data.properties.type}`
-										: null) ||
-									data.properties?.profile || // Tekla profile
-									data.speckleType ||
-									data.speckle_type ||
-									'Unknown';
-
-								// Flatten Report attributes (Tekla specific)
-								const reportProps: Record<string, any> = {};
-								if (data.properties?.Report) {
-									for (const key in data.properties.Report) {
-										const val = data.properties.Report[key];
-										if (val && typeof val === 'object' && 'value' in val) {
-											reportProps[key] = val.value;
-										} else {
-											reportProps[key] = val;
-										}
-									}
-								}
-
-								// Flatten Revit Parameters (Instance & Type)
-								const revitProps: Record<string, any> = {};
-								if (data.properties?.['Instance Parameters']) {
-									Object.assign(revitProps, data.properties['Instance Parameters']);
-								}
-								if (data.properties?.['Type Parameters']) {
-									Object.assign(revitProps, data.properties['Type Parameters']);
-								}
-
-								// Flatten IFC Property Sets
-								const ifcProps: Record<string, any> = {};
-								if (data.properties?.['Property Sets']) {
-									for (const psetKey in data.properties['Property Sets']) {
-										const pset = data.properties['Property Sets'][psetKey];
-										// Flatten each Pset keys into the main object, prefixed or just bare?
-										// Usually bare is better for simple SQL tables, but might collide. 
-										// Let's add them as-is to the params bag. 
-										// If pset is an object, spread it.
-										if (pset && typeof pset === 'object') {
-											Object.assign(ifcProps, pset);
-										}
-									}
-								}
-
-								// Flatten parameters
-								const parameters = {
-									...data.parameters,
-									...data.properties?.parameters,
-									...data.properties?.userDefinedAttributes, // Tekla UDAs
-									...reportProps,
-									...revitProps, // Revit Parameters
-									...ifcProps,   // IFC Properties
-								};
-
-								return {
-									id: data.id,
-									speckleType: data.speckleType || data.speckle_type,
-									sourceApplication: sourceApplication,
-									elementType: elementType,
-									category: data.category,
-									family: data.properties?.family,
-									type: data.properties?.type,
-									ifcType: data.properties?.ifcType,
-									profile: data.properties?.profile,
-									material: data.properties?.material,
-									...parameters, // Spread all parameters to top level or keep in parameters? 
-									// Let's keep distinct 'parameters' object but also allow distinct top-level fields
-									// Actually, usually users want one flat object or a clean 'parameters' bag.
-									// Let's stick to returning a clean structure:
-									parameters: parameters
-								};
-							});
-
-							responseData = processedObjects;
-
-						} else if (operation === 'flatten') {
-							// projectId/modelId/versionId already resolved (and projectId cleaned of any pasted URL) above
-
-							// 1) Get version to find referenced object ID
-							const versionResp = await client.makeGraphQLRequest(queries.getVersionObjects, { projectId, modelId, versionId });
-							const referencedObjectId = versionResp?.project?.model?.version?.referencedObject;
-
-							if (!referencedObjectId) {
-								throw new SpeckleError(this.getNode(), 'Referenced object not found for the provided version');
-							}
-
-							// 2) Fetch root object
-							const rootObject = await client.fetchObject(projectId, referencedObjectId);
-
-							// 3) Flatten tree
-							const objectMap = await flattenObjectTree(rootObject, (id) => client.fetchObject(projectId, id));
-							const allObjects = Array.from(objectMap.values());
-
-							// 4) Flatten properties
-							const flattenedObjects = allObjects.map(obj => flattenProperties(obj));
-
-							responseData = flattenedObjects;
-
-						} else if (operation === 'traverse') {
-							// projectId/modelId/versionId already resolved (and projectId cleaned of any pasted URL) above
-							const maxDepth = this.getNodeParameter('maxNodesToInspect', i, 1000) as number;
-							const excludeTypes = this.getNodeParameter('excludeTypes', i, []) as string[];
-							const returnProperties = this.getNodeParameter('returnProperties', i, []) as string[];
-
-							const versionResp = await client.makeGraphQLRequest(queries.getVersionObjects, { projectId, modelId, versionId });
-							const referencedObjectId = versionResp?.project?.model?.version?.referencedObject;
-							if (!referencedObjectId) {
-								throw new SpeckleError(this.getNode(), 'Referenced object not found for the provided version');
-							}
-
-							responseData = await traverseObjectTreeFiltered(
-								client,
-								projectId,
-								referencedObjectId,
-								{ maxCount: maxDepth, excludeTypes, returnProperties }
-							);
-
 						} else if (operation === 'validateIds') {
 							// Get and validate binaryPropertyName parameter
 							let binaryPropertyName = this.getNodeParameter('binaryPropertyName', i, 'data');
@@ -5912,7 +5388,7 @@ export class Speckle implements INodeType {
 						break;
 					}
 					case 'comment': {
-						const projectId = this.getNodeParameter('projectId', i) as string;
+						const projectId = getId('projectId');
 
 						const buildTipTapDoc = (text: string) => ({
 							type: 'doc',
@@ -6188,161 +5664,4 @@ async function processObject(
 		result[key] = processedValues[idx];
 	});
 	return result;
-}
-
-// Helper for 'traverse' operation
-async function traverseObjectTreeFiltered(
-	client: SpeckleClient,
-	streamId: string,
-	objectId: string,
-	options: {
-		maxCount: number;
-		excludeTypes: string[];
-		returnProperties: string[];
-	}
-): Promise<any[]> {
-	const maxCount = options.maxCount;
-	const excludeTypes = new Set(options.excludeTypes);
-	const returnProperties = options.returnProperties;
-
-	// Objects at the same BFS depth don't depend on each other, so each level is fetched
-	// concurrently (capped to avoid hammering the API); only depth, not node count, adds latency.
-	const CONCURRENCY = 10;
-
-	const visitedIds = new Set<string>();
-	const results: any[] = [];
-
-	const buildResultObj = (obj: any, speckleType: string): any => {
-		if (returnProperties.length === 0) {
-			return obj;
-		}
-		const resultObj: any = {};
-		// Always include id and speckleType for context
-		resultObj.id = obj.id;
-		resultObj.speckleType = speckleType;
-
-		for (const prop of returnProperties) {
-			if (obj[prop] !== undefined) {
-				resultObj[prop] = obj[prop];
-			} else if (obj.properties && obj.properties[prop] !== undefined) {
-				resultObj[prop] = obj.properties[prop];
-			} else if (obj.parameters && obj.parameters[prop] !== undefined) {
-				// Handle Revit-style parameters which are often objects { value: ... }
-				// We return the whole object or the value? Let's return the whole thing to be safe,
-				// or maybe just the value if it exists to simplify?
-				// Use case: user wants atomic values for CSV.
-				// If param has .value, use it.
-				const param = obj.parameters[prop];
-				resultObj[prop] = (param && typeof param === 'object' && 'value' in param) ? param.value : param;
-			} else {
-				// Universal search: Scan recursively for the property
-				// This handles IFC or other complex schema where property is nested deep (e.g. properties.Pset_WallCommon.ThermalTransmittance)
-				const scavenged = scavengeProperty(obj, prop);
-				if (scavenged !== undefined) {
-					resultObj[prop] = scavenged;
-				}
-			}
-		}
-		return resultObj;
-	};
-
-	visitedIds.add(objectId);
-	let frontier: string[] = [objectId];
-
-	while (frontier.length > 0 && results.length < maxCount) {
-		// Fetch the current level with bounded concurrency (may slightly over-fetch past
-		// maxCount within a single batch, traded off for the parallelism win)
-		const fetched: any[] = [];
-		for (let start = 0; start < frontier.length; start += CONCURRENCY) {
-			const batch = frontier.slice(start, start + CONCURRENCY);
-			const batchResults = await Promise.all(
-				batch.map((id) => client.fetchObject(streamId, id)),
-			);
-			fetched.push(...batchResults);
-		}
-
-		const nextFrontier: string[] = [];
-
-		for (const obj of fetched) {
-			if (results.length >= maxCount) break;
-
-			// Check exclusions - excluded nodes are dead ends, their children aren't traversed
-			const speckleType = obj.speckleType || obj.speckle_type;
-			if (excludeTypes.has(speckleType)) {
-				continue;
-			}
-
-			results.push(buildResultObj(obj, speckleType));
-
-			// Find children to traverse
-			const refs = findReferences(obj);
-			for (const refId of refs) {
-				if (!visitedIds.has(refId)) {
-					visitedIds.add(refId);
-					nextFrontier.push(refId);
-				}
-			}
-		}
-
-		frontier = nextFrontier;
-	}
-
-	return results;
-}
-
-function findReferences(obj: any): string[] {
-	const refs: string[] = [];
-	if (!obj || typeof obj !== 'object') return refs;
-
-	if (obj.referencedId) {
-		refs.push(obj.referencedId);
-		return refs; // It's a reference, no need to look inside
-	}
-
-	if (Array.isArray(obj)) {
-		for (const item of obj) {
-			refs.push(...findReferences(item));
-		}
-		return refs;
-	}
-
-	for (const key in obj) {
-		if (key === '__closure') continue;
-		refs.push(...findReferences(obj[key]));
-	}
-
-	return refs;
-}
-
-// Helper to recursively find a property value in an object tree (scavenging)
-function scavengeProperty(obj: any, propName: string, depth = 0): any {
-	if (depth > 50) return undefined; // Safety break
-	if (!obj || typeof obj !== 'object') return undefined;
-
-	// Check if this object has the property directly
-	if (obj[propName] !== undefined) {
-		// If it's a Revit-style parameter with value, return value
-		const val = obj[propName];
-		if (val && typeof val === 'object' && 'value' in val) return val.value;
-		return val;
-	}
-
-	// Recurse
-	if (Array.isArray(obj)) {
-		for (const item of obj) {
-			const res = scavengeProperty(item, propName, depth + 1);
-			if (res !== undefined) return res;
-		}
-	} else {
-		for (const key in obj) {
-			if (key === '__closure' || key === 'id' || key === 'speckle_type' || key === 'totalChildrenCount') continue;
-			// Don't traverse references (they are separate objects)
-			if (key === 'referencedId') continue; 
-			
-			const res = scavengeProperty(obj[key], propName, depth + 1);
-			if (res !== undefined) return res;
-		}
-	}
-
-	return undefined;
 }
